@@ -240,6 +240,9 @@ class inference:
                             algorithm='invertB')
             os.rename('ensembled/temp/difftemp.wav',self.spth + '/{}_{}_DeepExtraction_Instruments.wav'.format(basename, model_name))
             print('Complete!')
+            if isColab == False and os.path.isdir('ensembled/stage_1') == False:
+                for i in range(1,13):
+                    os.makedirs(rf'ensembled/stage_{i}')
             clear_folder('ensembled/temp')
         else: # args
             print('inverse stft of {}...'.format(stems['inst']), end=' ')
