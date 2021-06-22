@@ -6,7 +6,7 @@
 <br>Colaboratory version by [AudioHacker](https://www.youtube.com/channel/UC0NiSV1jLMH-9E09wiDVFYw), **Hv#3868**.</br></sup>
 
 
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://www.youtube.com/watch?v=dQw4w9WgXcQ)
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/NaJeongMo/Colaboratory-Notebook-for-Ultimate-Vocal-Remover/blob/main/Vocal%20Remover%205_arch.ipynb)
 
 ### Training Similarity extractor model
 - You'll need any tools that can filter mid and side
