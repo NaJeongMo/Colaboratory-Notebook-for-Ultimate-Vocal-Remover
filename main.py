@@ -242,7 +242,7 @@ class inference:
             print('Complete!')
             if isColab == False and os.path.isdir('ensembled/stage_1') == False:
                 for i in range(1,13):
-                    os.makedirs(rf'ensembled/stage_{i}')
+                    os.makedir(rf'ensembled/stage_{i}')
             clear_folder('ensembled/temp')
         else: # args
             print('inverse stft of {}...'.format(stems['inst']), end=' ')
@@ -337,8 +337,9 @@ def main():
             return 'default'
     if args.suppress:
         warnings.filterwarnings("ignore")
-    for i in range(1,13):
-        clear_folder('ensembled/stage_{}'.format(i))
+    if os.path.isdir('ensembled/stage_1') == False:
+        for i in range(1,13):
+            os.mkdir('ensembled/stage_{}'.format(i))
     clear_folder('ensembled/temp')
     if args.useAllModel == 'v5':
         if args.convert_all:
