@@ -240,10 +240,10 @@ class inference:
                             algorithm='invertB')
             os.rename('ensembled/temp/difftemp.wav',self.spth + '/{}_{}_DeepExtraction_Instruments.wav'.format(basename, model_name))
             print('Complete!')
-            if isColab == False and os.path.isdir('ensembled/stage_1') == False:
-                for i in range(1,13):
-                    os.makedir(rf'ensembled/stage_{i}')
-            clear_folder('ensembled/temp')
+            #if isColab == False and os.path.isdir('ensembled/stage_1') == False:
+            #    for i in range(1,13):
+            #       os.makedir(rf'ensembled/stage_{i}')
+            #clear_folder('ensembled/temp')
         else: # args
             print('inverse stft of {}...'.format(stems['inst']), end=' ')
             model_name = os.path.splitext(os.path.basename(self.ptm))[0]
@@ -337,10 +337,10 @@ def main():
             return 'default'
     if args.suppress:
         warnings.filterwarnings("ignore")
-    if os.path.isdir('ensembled/stage_1') == False:
-        for i in range(1,13):
-            os.mkdir('ensembled/stage_{}'.format(i))
-    clear_folder('ensembled/temp')
+    #if os.path.isdir('ensembled/stage_1') == False:
+    #    for i in range(1,13):
+    #        os.mkdir('ensembled/stage_{}'.format(i))
+    #clear_folder('ensembled/temp')
     if args.useAllModel == 'v5':
         if args.convert_all:
             for tracks in glob.glob('tracks/*'):
@@ -427,7 +427,7 @@ def main():
             process.inference()
             print('---------------------------------------------------------')
     elif args.model_ens:
-        if args.isColab:
+        if True:
             print('Temporary files will be saved in /content/temp/*')
             if os.path.isdir('/content/temp'):
                 pass
