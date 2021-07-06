@@ -3,6 +3,7 @@
 This was supposed to be an importable module,
 but I got lazy so if you're planning to change everything here goodluck
 """ 
+from numpy.core.fromnumeric import take
 from pathvalidate import sanitize_filename
 import soundfile as sf
 from tqdm import tqdm
@@ -19,7 +20,9 @@ import shutil
 
 import torch
 
+import wave
 import time
+import math
 import glob
 import cv2
 import sys
@@ -30,7 +33,6 @@ from lib import vr as _inference
 from lib import spec_utils
 
 
-
 class hide_opt:
     def __enter__(self):
         self._original_stdout = sys.stdout
@@ -39,10 +41,6 @@ class hide_opt:
     def __exit__(self, exc_type, exc_val, exc_tb):
         sys.stdout.close()
         sys.stdout = self._original_stdout
-
-def clear_folder(dir):
-    for file in os.scandir(dir):
-        os.remove(file.path)
 def take_lowest_val(param, o, inp, algorithm='invert',supress=False):
     X_wave, y_wave, X_spec_s, y_spec_s = {}, {}, {}, {}
     mp = ModelParameters(param)
@@ -54,9 +52,9 @@ def take_lowest_val(param, o, inp, algorithm='invert',supress=False):
                 
         if d == len(mp.param['band']): # high-end band
             X_wave[d], _ = librosa.load(
-                inp[0], bp['sr'], False, dtype=np.float32, res_type=bp['res_type'])
+                inp[0], bp['sr'], mono=False, res_type=bp['res_type'])
             y_wave[d], _ = librosa.load(
-                inp[1], bp['sr'], False, dtype=np.float32, res_type=bp['res_type'])
+                inp[1], bp['sr'], mono=False, res_type=bp['res_type'])
         else: # lower bands
             X_wave[d] = librosa.resample(X_wave[d+1], mp.param['band'][d+1]['sr'], bp['sr'], res_type=bp['res_type'])
             y_wave[d] = librosa.resample(y_wave[d+1], mp.param['band'][d+1]['sr'], bp['sr'], res_type=bp['res_type'])
@@ -70,7 +68,6 @@ def take_lowest_val(param, o, inp, algorithm='invert',supress=False):
     del X_wave, y_wave
     X_spec_m = spec_utils.combine_spectrograms(X_spec_s, mp)
     y_spec_m = spec_utils.combine_spectrograms(y_spec_s, mp)
-
     if y_spec_m.shape != X_spec_m.shape:
         print('Warning: The combined spectrograms are different!')   
         print('X_spec_m: ' + str(X_spec_m.shape))
@@ -85,10 +82,19 @@ def take_lowest_val(param, o, inp, algorithm='invert',supress=False):
         v_spec_m = X_spec_m - y_spec_m
     if algorithm == 'min_mag':
         #print('using ALGORITHM: MIN_MAG')
-        v_spec_m = np.where(np.abs(y_spec_m) <= np.abs(X_spec_m), y_spec_m, X_spec_m)
+        v_spec_mL = np.where(np.abs(y_spec_m[0]) <= np.abs(X_spec_m[0]), y_spec_m[0], X_spec_m[0])
+        v_spec_mR = np.where(np.abs(y_spec_m[1]) <= np.abs(X_spec_m[1]), y_spec_m[1], X_spec_m[1])
+        v_spec_m = np.asfortranarray([v_spec_mL,v_spec_mR])
+        del v_spec_mL,v_spec_mR
     if algorithm == 'max_mag':
         #print('using ALGORITHM: MAX_MAG')
-        v_spec_m = np.where(np.abs(y_spec_m) >= np.abs(X_spec_m), y_spec_m, X_spec_m)
+        v_spec_mL = np.where(np.abs(y_spec_m[0]) >= np.abs(X_spec_m[0]), y_spec_m[0], X_spec_m[0])
+        v_spec_mR = np.where(np.abs(y_spec_m[1]) >= np.abs(X_spec_m[1]), y_spec_m[1], X_spec_m[1])
+        v_spec_m = np.asfortranarray([v_spec_mL,v_spec_mR])
+        del v_spec_mL,v_spec_mR
+    if algorithm == 'comb_norm': # debug
+        v_spec_m = y_spec_m + X_spec_m
+        v_spec_m = v_spec_m / 2
     X_mag = np.abs(X_spec_m)
     y_mag = np.abs(y_spec_m)
     v_mag = np.abs(v_spec_m)
@@ -106,9 +112,10 @@ def take_lowest_val(param, o, inp, algorithm='invert',supress=False):
         sf.write('{}_y.wav'.format(o), spec_utils.cmb_spectrogram_to_wave(y_spec_m, mp), mp.param['sr'])
     
     sf.write('{}.wav'.format(o), spec_utils.cmb_spectrogram_to_wave(v_spec_m, mp), mp.param['sr'])
+    del v_spec_m,y_spec_m,X_spec_m
 
 
-def whatParameterDoIUseForThisModel(modelname): # lol idk what to call this one
+def whatParameterDoIUseForThisModel(modelname):
     if '4band' in modelname:
         parameter = 'modelparams/4band_44100.json'
     elif '3Band' in modelname:
@@ -240,10 +247,6 @@ class inference:
                             algorithm='invertB')
             os.rename('ensembled/temp/difftemp.wav',self.spth + '/{}_{}_DeepExtraction_Instruments.wav'.format(basename, model_name))
             print('Complete!')
-            #if isColab == False and os.path.isdir('ensembled/stage_1') == False:
-            #    for i in range(1,13):
-            #       os.makedir(rf'ensembled/stage_{i}')
-            #clear_folder('ensembled/temp')
         else: # args
             print('inverse stft of {}...'.format(stems['inst']), end=' ')
             model_name = os.path.splitext(os.path.basename(self.ptm))[0]
@@ -301,21 +304,20 @@ def main():
     p.add_argument('--suppress', '-s', action='store_true', help='Hide Warnings')
 
     p.add_argument('--input', '-i', required=True, help='Input')
-    p.add_argument('--pretrained_model', '-P', type=str, default='', required=True, help='Pretrained model')
+    p.add_argument('--pretrained_model', '-P', type=str, default='', help='Pretrained model')
     p.add_argument('--nn_architecture', '-n', type=str, choices=['default', '33966KB', '123821KB', '129605KB','537238KB'], default='default', help='Model architecture')
     p.add_argument('--high_end_process', '-H', type=str, choices=['none', 'bypass', 'mirroring', 'mirroring2'], default='none', help='Working with extending a low band model.')
 
     p.add_argument('--gpu', '-g', type=int, default=-1, help='Use GPU for faster processing')
-    p.add_argument('--model_params', '-m', type=str, default='', required=True, help="Model's parameter")
+    p.add_argument('--model_params', '-m', type=str, default='', help="Model's parameter")
     p.add_argument('--window_size', '-w', type=int, default=512, help='Window size')
     p.add_argument('--aggressiveness', '-A', type=float, default=0.07, help='Aggressiveness of separation')
 
     p.add_argument('--deepextraction', '-D', action='store_true', help='Deeply remove vocals from instruments')
-    p.add_argument('--model_ens', '-me', action='store_true', help='Use all 12 models and combine results') # MODEL RESULT ENSEMBLING
+    
     p.add_argument('--convert_all', '-c', action='store_true', help='Split all tracks in tracks/ folder') # ITERATE ALL TRACKS
     p.add_argument('--useAllModel', '-a', type=str, choices=['none', 'v5', 'v5_new', 'all'], default='none', help='Use all models') # ITERATE TO MODEL
 
-    p.add_argument('--isColab', action='store_true', help='Saves all temporary files to /content/temp')
     args = p.parse_args()
     arch = args.nn_architecture
     def whatArchitectureIsThisModel(modelname):
@@ -337,10 +339,6 @@ def main():
             return 'default'
     if args.suppress:
         warnings.filterwarnings("ignore")
-    #if os.path.isdir('ensembled/stage_1') == False:
-    #    for i in range(1,13):
-    #        os.mkdir('ensembled/stage_{}'.format(i))
-    #clear_folder('ensembled/temp')
     if args.useAllModel == 'v5':
         if args.convert_all:
             for tracks in glob.glob('tracks/*'):
@@ -426,163 +424,14 @@ def main():
             process = inference(tracks,args.model_params,args.pretrained_model,gpu=args.gpu,hep=args.high_end_process,wsize=args.window_size,agr=args.aggressiveness,tta=args.tta,oi=args.output_image,de=args.deepextraction,pp=args.postprocess,arch=arch,v=args.isVocal)
             process.inference()
             print('---------------------------------------------------------')
-    elif args.model_ens:
-        if True:
-            print('Temporary files will be saved in /content/temp/*')
-            if os.path.isdir('/content/temp'):
-                pass
-            else:
-                for stages in range(1,10+1):
-                    os.makedirs(rf'/content/temp/stage_{stages}')
-                os.makedirs(r'/content/temp/temp')
 
-            temp_ens_path = '/content/temp/temp'
-        else:
-            temp_ens_path = 'ensembled/temp'
-        loc = ['models/v5_new/','models/v5/']
-        ensmodels = [f'{loc[0]}HighPrecison_4band_arch-124m_1.pth',
-                    f'{loc[0]}HighPrecison_4band_arch-124m_2.pth',
-                    f'{loc[0]}LOFI_2band-1_arch-34m.pth',
-                    f'{loc[0]}LOFI_2band-2_arch-34m.pth',
-                    f'{loc[0]}NewLayer_4band_arch-130m_1.pth',
-                    f'{loc[0]}NewLayer_4band_arch-130m_2.pth',
-                    f'{loc[1]}MGM-v5-2Band-32000-_arch-default-BETA1.pth',
-                    f'{loc[1]}MGM-v5-2Band-32000-_arch-default-BETA2.pth',
-                    f'{loc[1]}MGM-v5-4Band-44100-_arch-default-BETA1.pth',
-                    f'{loc[1]}MGM-v5-4Band-44100-_arch-default-BETA2.pth',
-                    f'{loc[1]}MGM-v5-MIDSIDE-44100-_arch-default-BETA1.pth',
-                    f'{loc[1]}MGM-v5-MIDSIDE-44100-_arch-default-BETA2.pth']
-        r = 0
-        #print('Splitting {}...'.format(os.path.splitext(os.path.basename(args.input))[0]))
-
-        for models in ensmodels:
-            print('USING MODEL: {}'.format(models))
-            #break
-            model_params = whatParameterDoIUseForThisModel(models)
-            arch = whatArchitectureIsThisModel(models) # import as nets
-            process = inference(args.input,
-                                model_params,
-                                models,
-                                gpu=args.gpu,
-                                hep=args.high_end_process,
-                                wsize=args.window_size,
-                                agr=args.aggressiveness,
-                                tta=args.tta,
-                                oi=args.output_image,
-                                de=args.deepextraction,
-                                pp=args.postprocess,
-                                fn=r,
-                                spth=temp_ens_path,
-                                arch=arch)
-            process.inference()
-            r += 1
-            print('---------------------------------------------------------')
-        if args.isColab:
-            temp_ens_path = '/content/temp/'
-            savedtemp = '/content/temp'
-        else:
-            temp_ens_path = 'ensembled'
-            savedtemp = 'ensembled'
-        basename_list = []
-        for a in enumerate(ensmodels):
-            b = os.path.splitext(os.path.basename(a[1]))[0]
-            basename_list.append(str(a[0])+'_'+b)
-        
-        param = 'modelparams/ensemble.json'
-        #param = 'modelparams/1band_sr44100_hl512.json'
-        print('Ensembling Instrumental...')
-        progress_bar = tqdm(total=55)
-        for a,b in zip(basename_list,range(len(basename_list))): # stage 1
-            
-            if b*2 == 0:
-                c = 1
-            else:
-                c += 1 # temporary b+1, +1 index offset
-                if c >= len(basename_list)-1:
-                    break
-
-            take_lowest_val(param,f'{temp_ens_path}/stage_1/'+str(b),[savedtemp+'/temp/'+a+'_Instruments.wav',savedtemp+'/temp/'+basename_list[c]+'_Instruments.wav'],algorithm='min_mag',supress=True)
-            progress_bar.update(1)
-        # nested loop
-        for folder in range(2,12+1):
-            for a in range(len(basename_list)-folder):
-                if a*2 == 0:
-                    c = 1 
-                else:
-                    c += 1
-                    if c >= len(basename_list)-folder:
-                        break
-                #temp_ens_path+f'/stage_{folder-1}/{a}.wav
-                if os.path.isfile(temp_ens_path+f'/stage_{folder-1}/{a+1}.wav') == False:
-                    break
-                take_lowest_val(param,temp_ens_path+f'/stage_{folder}/'+str(a),[temp_ens_path+f'/stage_{folder-1}/{a}.wav',temp_ens_path+f'/stage_{folder-1}/{c}.wav'],algorithm='min_mag',supress=True)
-                progress_bar.update(1)
-        progress_bar.close()
-        bsnme = os.path.splitext(os.path.basename(args.input))[0]
-        if True:
-            final_ens = os.path.join(f'{temp_ens_path}/stage_10','0.wav')
-            if os.path.isfile('separated/{}_Ensembled_Instruments.wav'.format(bsnme)):
-                rename = os.path.join(f'{temp_ens_path}/stage_10',bsnme + '{}_Ensembled_Instruments.wav'.format(random.randint(0,1000)))
-            else:
-                rename = os.path.join(f'{temp_ens_path}/stage_10',bsnme + '_Ensembled_Instruments.wav')
-            os.rename(final_ens,rename)
-            final_ens = '{}/stage_10/{}_Ensembled_Instruments.wav'.format(temp_ens_path,bsnme)
-            if os.path.isfile('separated/' + bsnme):
-                final_ens = '{}/stage_10/{}_{}_Ensembled_Instruments.wav'.format(temp_ens_path,random.randint(0,22),bsnme)
-            shutil.move(final_ens,'separated/')
-
-        print('Ensembling Vocals...')
-        progress_bar = tqdm(total=55)
-        for a,b in zip(basename_list,range(len(basename_list))): # stage 1
-            
-            if b*2 == 0:
-                c = 1
-            else:
-                c += 1 # temporary b+1, +1 index offset
-                if c >= len(basename_list)-1:
-                    break
-            take_lowest_val(param,f'{temp_ens_path}/stage_1/'+str(b),[savedtemp+'/temp/'+a+'_Vocals.wav',savedtemp+'/temp/'+basename_list[c]+'_Vocals.wav'],algorithm='max_mag',supress=True)
-            progress_bar.update(1)
-        # nested loop
-        for folder in range(2,12+1):
-            for a in range(len(basename_list)-folder):
-                if a*2 == 0:
-                    c = 1 
-                else:
-                    c += 1
-                    if c >= len(basename_list)-folder:
-                        break
-                #temp_ens_path+f'/stage_{folder-1}/{a}.wav
-                if os.path.isfile(temp_ens_path+f'/stage_{folder-1}/{a+1}.wav') == False:
-                    break
-                take_lowest_val(param,temp_ens_path+f'/stage_{folder}/'+str(a),[temp_ens_path+f'/stage_{folder-1}/{a}.wav',temp_ens_path+f'/stage_{folder-1}/{c}.wav'],algorithm='max_mag',supress=True)
-                progress_bar.update(1)
-        progress_bar.close()
-        if True:
-            final_ens = os.path.join(f'{temp_ens_path}/stage_10','0.wav')
-            if os.path.isfile('separated/{}_Ensembled_Vocals.wav'.format(bsnme)):
-                rename = os.path.join(f'{temp_ens_path}/stage_10',bsnme + '{}_Ensembled_Vocals.wav'.format(random.randint(0,1000)))
-            else:
-                rename = os.path.join(f'{temp_ens_path}/stage_10',bsnme + '_Ensembled_Vocals.wav')
-            os.rename(final_ens,rename)
-            final_ens = '{}/stage_10/{}_Ensembled_Vocals.wav'.format(temp_ens_path,bsnme)
-            if os.path.isfile('separated/' + bsnme):
-                final_ens = '{}/stage_10/{}_{}_Ensembled_Vocals.wav'.format(temp_ens_path,random.randint(0,22),bsnme)
-            shutil.move(final_ens,'separated/')
-        for i in range(1,10+1):
-            clear_folder('{}/stage_{}/'.format(temp_ens_path,i))
-        if args.isColab:
-            temp_ens_path = '/content/temp'
-        clear_folder(f'{temp_ens_path}/temp')
     else:
+        process = inference(args.input,args.model_params,args.pretrained_model,gpu=args.gpu,hep=args.high_end_process,wsize=args.window_size,agr=args.aggressiveness,tta=args.tta,oi=args.output_image,de=args.deepextraction,pp=args.postprocess,arch=arch,v=args.isVocal)
         if 'https://' in args.input:
             warnings.filterwarnings("ignore")
-            process = inference(args.input,args.model_params,args.pretrained_model,gpu=args.gpu,hep=args.high_end_process,wsize=args.window_size,agr=args.aggressiveness,tta=args.tta,oi=args.output_image,de=args.deepextraction,pp=args.postprocess,arch=arch,v=args.isVocal)
             process.YouTube()
         else: # single
-            process = inference(args.input,args.model_params,args.pretrained_model,gpu=args.gpu,hep=args.high_end_process,wsize=args.window_size,agr=args.aggressiveness,tta=args.tta,oi=args.output_image,de=args.deepextraction,pp=args.postprocess,arch=arch,v=args.isVocal)
             process.inference()
-            #### old inference(args.input, args.model_params, args.pretrained_model, args.gpu, args.high_end_process, args.window_size, args.aggressiveness, tta=args.tta, oi=args.output_image, de=args.deepextraction, pp=args.postprocess, v=args.isVocal)
 
 
 if __name__ == "__main__":
