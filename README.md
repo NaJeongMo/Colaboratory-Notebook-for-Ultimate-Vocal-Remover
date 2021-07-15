@@ -7,19 +7,3 @@
 
 
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/NaJeongMo/Colaboratory-Notebook-for-Ultimate-Vocal-Remover/blob/main/Vocal%20Remover%205_arch.ipynb)
-
-### Training Similarity extractor model
-- You'll need any tools that can filter mid and side
-  - Download original CLI version [here](https://github.com/tsurumeso/vocal-remover/archive/refs/heads/master.zip)
-  - ```python3 train.py --dataset "path/to/dataset/" --sr 44100 --hop_length 512 --n_fft 2048```
-```
-path/to/dataset/
-  +- instruments/
-  |    +- 01_foo_mid.wav ( this is dual mono )
-  |    +- 02_bar_mid.mp3 ( this is dual mono )
-  |    +- ...
-  +- mixtures/
-       +- 01_foo_mixture.wav
-       +- 02_bar_mixture.mp3
-       +- ...
-```
