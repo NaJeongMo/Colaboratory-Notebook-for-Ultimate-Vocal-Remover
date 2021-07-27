@@ -78,11 +78,17 @@ def whatParameterDoIUseForThisModel(modelname):
     elif 'MIDSIDE' in modelname:
         parameter = 'modelparams/3band_44100_mid.json'
     elif '2Band' in modelname:
-        parameter = 'modelparams/2band_48000.json'
+        if '32000' in modelname:
+            parameter = '2band_32000.json' 
+        else:
+            parameter = 'modelparams/2band_48000.json'
     elif 'LOFI' in modelname:
         parameter = 'modelparams/2band_44100_lofi.json'
     else:
-        parameter = 'modelparams/1band_sr44100_hl512.json'
+        if '32000' in modelname:
+            parameter = 'modelparams/1band_sr32000_hl512.json'
+        else:
+            parameter = 'modelparams/1band_sr44100_hl512.json'
     return parameter
 
 def whatArchitectureIsThisModel(modelname):
