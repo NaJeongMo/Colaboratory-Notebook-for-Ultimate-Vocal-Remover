@@ -79,7 +79,7 @@ def whatParameterDoIUseForThisModel(modelname):
         parameter = 'modelparams/3band_44100_mid.json'
     elif '2Band' in modelname:
         if '32000' in modelname:
-            parameter = '2band_32000.json' 
+            parameter = 'modelparams/2band_32000.json' 
         else:
             parameter = 'modelparams/2band_48000.json'
     elif 'LOFI' in modelname:
