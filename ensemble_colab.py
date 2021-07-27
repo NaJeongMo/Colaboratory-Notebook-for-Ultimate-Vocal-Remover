@@ -17,6 +17,8 @@ import sys
 import os
 
 from lib.model_param_init import ModelParameters
+#from main import take_lowest_val as ens_tlv
+from main import normalise
 from main import inference
 from lib import spec_utils
 
@@ -35,26 +37,38 @@ def ensembleIteration(count):
         i = count_temp - i
         result += i
     return result
-
+#take_lowest_val(param, o, inp, algorithm='invert',supress=False)
 def ens_tlv(hl, n_fft, o, inp, algorithm='invert',supress=False):
-    if algorithm == 'invert':
-        #print('using ALGORITHM: INVERT')
-        v_spec_m = inp[0] - inp[1]
-    if algorithm == 'comb_norm': # debug
-        v_spec_m = inp[0] + inp[1]
-        v_spec_m = v_spec_m / 2
-    w1,_ = librosa.load(inp[0], sr=44100, mono=False, res_type='polyphase')
-    w2,_ = librosa.load(inp[1], sr=44100, mono=False, res_type='polyphase')
+    w1,_ = librosa.load(inp[0], sr=44100, mono=False, res_type='kaiser_best')
+    w2,_ = librosa.load(inp[1], sr=44100, mono=False, res_type='kaiser_best')
     w1,w2=crop(w1,w2)
     t1 = spec_utils.wave_to_spectrogram(w1, hl, n_fft, False, False)
     t2 = spec_utils.wave_to_spectrogram(w2, hl, n_fft, False, False)
+    if algorithm == 'invert':
+        #print('using ALGORITHM: INVERT')
+        y_spec_m = spec_utils.reduce_vocal_aggressively(t1, t2, 0.2)
+        v_spec_m = t1 - t2
     if algorithm == 'min_mag':
         #print('using ALGORITHM: MIN_MAG')
         v_spec_m = np.where(np.abs(t1) <= np.abs(t2), t1, t2)
     if algorithm == 'max_mag':
         #print('using ALGORITHM: MAX_MAG')
         v_spec_m = np.where(np.abs(t1) >= np.abs(t2), t1, t2)
-    sf.write('{}.wav'.format(o), spec_utils.spectrogram_to_wave(v_spec_m, hl, False, False).T, 44100)
+    if algorithm == 'np_min':
+        #print('using ALGORITHM: MIN_MAG')
+        v_spec_m = np.minimum(t1,t2)
+    if algorithm == 'np_max':
+        #print('using ALGORITHM: MAX_MAG')
+        v_spec_m = np.maximum(t1,t2)
+
+    if algorithm == 'comb_norm': # debug
+        v_spec_m = t1+ t2
+        v_spec_m /= 2
+    wav = spec_utils.spectrogram_to_wave(v_spec_m, hl, False, False)
+    if algorithm == 'comb_norm':
+        wav = normalise(wav)
+    sf.write('{}.wav'.format(o), wav.T, 44100)
+    del t1, t2, w1, w2, _, v_spec_m
 
 def whatParameterDoIUseForThisModel(modelname):
     if '4band' in modelname:
@@ -89,7 +103,7 @@ def whatArchitectureIsThisModel(modelname):
             print('Error! autoDetect_arch. Did you modify model filenames?')
             return 'default'
 
-def ensemble(input,model=[],suffix=''):
+def ensemble(input,model=[],algorithms=['min_mag','max_mag']):
     if len(model) <= 1:
         print('You need at least 2 models!')
         sys.exit()
@@ -145,8 +159,8 @@ def ensemble(input,model=[],suffix=''):
     iter = ensembleIteration(r)
     progress_bar = tqdm(total=iter)
 
-    ins_algo = 'min_mag'
-    voc_algo = 'max_mag'
+    ins_algo = algorithms[0]
+    voc_algo = algorithms[1]
     n_fft = 2048
     hl = 512
     for a in range(0,r):
@@ -204,6 +218,7 @@ p.add_argument('--suppress', '-s', action='store_true', help='Hide Warnings')
 p.add_argument('--start', default=1)
 p.add_argument('--stop', default=1)
 p.add_argument('--increments', default=1)
+p.add_argument('--algo','-a', nargs='+', default=['min_mag','max_mag'], help='Algorithm to be used for instrumental and acapella. (In order)')
 
 p.add_argument('--high_end_process', '-H', type=str, choices=['none', 'bypass', 'mirroring', 'mirroring2'], default='none', help='Working with extending a low band model.')
 p.add_argument('--window_size', '-w', type=int, default=512, help='Window size')
@@ -218,6 +233,5 @@ args = p.parse_args()
 #----------------------------------
 if args.suppress:
     warnings.filterwarnings("ignore")
-
 # ---------------------------------
-ensemble(args.input,args.model_ens)
+ensemble(args.input,args.model_ens,algorithms=args.algo)

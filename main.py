@@ -41,6 +41,12 @@ class hide_opt:
     def __exit__(self, exc_type, exc_val, exc_tb):
         sys.stdout.close()
         sys.stdout = self._original_stdout
+def normalise(wave):
+    if max(abs(wave[0])) >= max(abs(wave[1])):
+        wave *= 1/max(abs(wave[0]))
+    elif max(abs(wave[0])) <= max(abs(wave[1])):
+        wave *= 1/max(abs(wave[1]))
+    return wave
 def take_lowest_val(param, o, inp, algorithm='invert',supress=False):
     X_wave, y_wave, X_spec_s, y_spec_s = {}, {}, {}, {}
     mp = ModelParameters(param)
@@ -73,10 +79,6 @@ def take_lowest_val(param, o, inp, algorithm='invert',supress=False):
         print('X_spec_m: ' + str(X_spec_m.shape))
         print('y_spec_m: ' + str(y_spec_m.shape))
     if algorithm == 'invert':
-        #print('using ALGORITHM: INVERT')
-        y_spec_m = spec_utils.reduce_vocal_aggressively(X_spec_m, y_spec_m, 0.2)
-        v_spec_m = X_spec_m - y_spec_m
-    if algorithm == 'invertB':
         #print('using ALGORITHM: INVERTB')
         y_spec_m = spec_utils.reduce_vocal_aggressively(X_spec_m, y_spec_m, 0.2)
         v_spec_m = X_spec_m - y_spec_m
@@ -94,26 +96,16 @@ def take_lowest_val(param, o, inp, algorithm='invert',supress=False):
         del v_spec_mL,v_spec_mR
     if algorithm == 'comb_norm': # debug
         v_spec_m = y_spec_m + X_spec_m
-        v_spec_m = v_spec_m / 2
-    X_mag = np.abs(X_spec_m)
-    y_mag = np.abs(y_spec_m)
-    v_mag = np.abs(v_spec_m)
-
-    X_image = spec_utils.spectrogram_to_image(X_mag)
-    y_image = spec_utils.spectrogram_to_image(y_mag)
-    v_image = spec_utils.spectrogram_to_image(v_mag)
+        v_spec_m /= 2
     
-    if algorithm == 'invert':
-        cv2.imwrite('{}_X.png'.format(o), X_image)
-        cv2.imwrite('{}_y.png'.format(o), y_image)
-        cv2.imwrite('{}_v.png'.format(o), v_image)    
-        
-        sf.write('{}_X.wav'.format(o), spec_utils.cmb_spectrogram_to_wave(X_spec_m, mp), mp.param['sr'])
-        sf.write('{}_y.wav'.format(o), spec_utils.cmb_spectrogram_to_wave(y_spec_m, mp), mp.param['sr'])
+    wav = spec_utils.cmb_spectrogram_to_wave(v_spec_m, mp)
+    if algorithm == 'comb_norm':
+        wav = normalise(wav)
     
-    sf.write('{}.wav'.format(o), spec_utils.cmb_spectrogram_to_wave(v_spec_m, mp), mp.param['sr'])
-    del v_spec_m,y_spec_m,X_spec_m
+    sf.write('{}.wav'.format(o), wav, mp.param['sr'])
+    del v_spec_m,y_spec_m,X_spec_m,wav
 
+            
 
 def whatParameterDoIUseForThisModel(modelname):
     if '4band' in modelname:
@@ -131,7 +123,8 @@ def whatParameterDoIUseForThisModel(modelname):
     return parameter
 
 class inference:
-    def __init__(self, input, param, ptm, gpu=-1, hep='none', wsize=320, agr=0.07, tta=False, oi=False, de=False, v=False, spth='separated', fn='', pp=False, arch='default'):
+    def __init__(self, input, param, ptm, gpu=-1, hep='none', wsize=320, agr=0.07, tta=False, oi=False, de=False, v=False, spth='separated', fn='', pp=False, arch='default',
+                pp_thres = 0.2, mrange = 32, fsize = 64):
         self.input = input
         self.param = param
         self.ptm = ptm
@@ -147,6 +140,9 @@ class inference:
         self.fn = fn
         self.pp = pp
         self.arch = arch
+        self.pp_thres = pp_thres
+        self.mrange = mrange
+        self.fsize = fsize
     def inference(self):
         nets = importlib.import_module('lib.nets' + f'_{self.arch}'.replace('_default', ''), package=None)
         # load model -------------------------------
@@ -196,7 +192,7 @@ class inference:
         if self.pp:
             print('post processing...', end=' ')
             pred_inv = np.clip(X_mag - pred, 0, np.inf)
-            pred = spec_utils.mask_silence(pred, pred_inv)
+            pred = spec_utils.mask_silence(pred, pred_inv, thres=self.pp_thres, min_range=self.mrange, fade_size=self.fsize)
             print('done')
         # swap if v=True
         if self.v:
@@ -274,8 +270,13 @@ class inference:
         inputsha = hashlib.sha1(bytes(link, encoding='utf8')).hexdigest() + '.wav'
         self.input = inputsha
         # 251/140/250/139
-        opt = {'format': 'best', 'outtmpl': inputsha, 'updatetime': False, 'nocheckcertificate': True}
-        print('Link detected')
+        frmt = 'best'
+        if 'youtu' in link:
+            frmt = '251/140/250/139'
+            print('YouTube Link detected')
+        else:
+            print('Foreign link detected. Attempting to download.')
+        opt = {'format': frmt, 'outtmpl': inputsha, 'updatetime': False, 'nocheckcertificate': True}
         print('Downloading...', end=' ')
         with hide_opt():
             with youtube_dl.YoutubeDL(opt) as ydl:
@@ -295,7 +296,41 @@ class inference:
         if os.path.isfile(inputsha):
             os.remove(inputsha)
 
+def whatArchitectureIsThisModel(modelname):
+    if 'arch-default' in modelname:
+        return 'default'
+    elif 'arch-34m' in modelname:
+        return '33966KB'
+        #from lib import nets_33966KB as nets 
+    elif 'arch-124m' in modelname:
+        return '123821KB'
+        #from lib import nets_123821KB as nets
+    elif 'arch-130m' in modelname:
+        return '129605KB'
+        #from lib import nets_129605KB as nets
+    elif 'arch-500m' in modelname:
+        return '537238KB'
+    else:
+        print('Error! autoDetect_arch. Did you modify model filenames?')
+        return 'default'
+
+def multi_file(models, inputs):
+    print('Multiple files detected.')
+    print('---------------------------------------------------------------')
+    for model in models:
+        for track in inputs:
+            print('Now processing: {} \nwith {}'.format(os.path.splitext(os.path.basename(track))[0],os.path.basename(model)))
+            model_params = whatParameterDoIUseForThisModel(model)
+            arch = whatArchitectureIsThisModel(model)
+            process = inference(track, model_params,model,gpu=args.gpu,hep=args.high_end_process,wsize=args.window_size,agr=args.aggressiveness,tta=args.tta,oi=args.output_image,de=args.deepextraction,pp=args.postprocess,arch=arch,v='vocal' in track.lower(), pp_thres=args.pp_threshold, mrange=args.pp_min_range, fsize=args.pp_fade_size)
+            if 'https://' in track:
+                process.YouTube()
+            else:
+                process.inference()
+            print('---------------------------------------------------------------')
+
 def main():
+    global args
     p = argparse.ArgumentParser()
     p.add_argument('--isVocal','-v', action='store_true', help='Flip Instruments and Vocals output (Only for Vocal Models)') # FLIP
     p.add_argument('--output_image', '-I', action='store_true', help='Export Spectogram in an image format')
@@ -303,11 +338,15 @@ def main():
     p.add_argument('--tta', '-t', action='store_true', help='Perform Test-Time-Augmentation to improve the separation quality.')
     p.add_argument('--suppress', '-s', action='store_true', help='Hide Warnings')
 
-    p.add_argument('--input', '-i', required=True, help='Input')
+    p.add_argument('--input', '-i', help='Input')
     p.add_argument('--pretrained_model', '-P', type=str, default='', help='Pretrained model')
     p.add_argument('--nn_architecture', '-n', type=str, choices=['default', '33966KB', '123821KB', '129605KB','537238KB'], default='default', help='Model architecture')
     p.add_argument('--high_end_process', '-H', type=str, choices=['none', 'bypass', 'mirroring', 'mirroring2'], default='none', help='Working with extending a low band model.')
-
+    
+    p.add_argument('--pp_threshold', '-thres',type=float, default=0.2, help='threshold - This is an argument for post-processing')
+    p.add_argument('--pp_min_range', '-mrange',type=int, default=64, help='min_range - This is an argument for post-processing')
+    p.add_argument('--pp_fade_size', '-fsize',type=int, default=32, help='fade_size - This is an argument for post-processing')
+    
     p.add_argument('--gpu', '-g', type=int, default=-1, help='Use GPU for faster processing')
     p.add_argument('--model_params', '-m', type=str, default='', help="Model's parameter")
     p.add_argument('--window_size', '-w', type=int, default=512, help='Window size')
@@ -319,114 +358,28 @@ def main():
     p.add_argument('--useAllModel', '-a', type=str, choices=['none', 'v5', 'v5_new', 'all'], default='none', help='Use all models') # ITERATE TO MODEL
 
     args = p.parse_args()
-    arch = args.nn_architecture
-    def whatArchitectureIsThisModel(modelname):
-        if 'arch-default' in modelname:
-            return 'default'
-        elif 'arch-34m' in modelname:
-            return '33966KB'
-            #from lib import nets_33966KB as nets 
-        elif 'arch-124m' in modelname:
-            return '123821KB'
-            #from lib import nets_123821KB as nets
-        elif 'arch-130m' in modelname:
-            return '129605KB'
-            #from lib import nets_129605KB as nets
-        elif 'arch-500m' in modelname:
-            return '537238KB'
-        else:
-            print('Error! autoDetect_arch. Did you modify model filenames?')
-            return 'default'
     if args.suppress:
         warnings.filterwarnings("ignore")
-    if args.useAllModel == 'v5':
+    if args.convert_all or args.useAllModel != 'none':
+        # ∕
         if args.convert_all:
-            for tracks in glob.glob('tracks/*'):
-                for models in glob.glob('models/v5/*'):
-                    model_params = whatParameterDoIUseForThisModel(models)
-                    arch = whatArchitectureIsThisModel(models)
-                    process = inference(tracks, model_params,models,gpu=args.gpu,hep=args.high_end_process,wsize=args.window_size,agr=args.aggressiveness,tta=args.tta,oi=args.output_image,de=args.deepextraction,pp=args.postprocess,arch=arch)
-                    process.inference()
-        elif 'https://' in args.input:
-            for models in glob.glob('models/v5/*'):
-                model_params = whatParameterDoIUseForThisModel(models)
-                arch = whatArchitectureIsThisModel(models)
-                process = inference(args.input,model_params,models,gpu=args.gpu,hep=args.high_end_process,wsize=args.window_size,agr=args.aggressiveness,tta=args.tta,oi=args.output_image,de=args.deepextraction,pp=args.postprocess,arch=arch)
-                process.YouTube()
+            args.input = glob.glob('tracks/*')
+        elif type(args.input) == str:
+            args.input = [args.input]
+        if args.useAllModel == 'v5':
+            useModel = glob.glob('models/v5/*.pth')
+        elif args.useAllModel == 'v5_new':
+            useModel = glob.glob('models/v5_new/*.pth')
+        elif args.useAllModel == 'all':
+            useModel = glob.glob('models/v5_new/*.pth')
+            useModel.extend(glob.glob('models/v5/*.pth'))
         else:
-            for models in glob.glob('models/v5/*'):
-                model_params = whatParameterDoIUseForThisModel(models)
-                arch = whatArchitectureIsThisModel(models)
-                process = inference(args.input,model_params,models,gpu=args.gpu,hep=args.high_end_process,wsize=args.window_size,agr=args.aggressiveness,tta=args.tta,oi=args.output_image,de=args.deepextraction,pp=args.postprocess,arch=arch)
-                process.inference()
-    elif args.useAllModel == 'v5_new':
-        if args.convert_all:
-            for tracks in glob.glob('tracks/*'):
-                for models in glob.glob('models/v5_new/*'):
-                    model_params = whatParameterDoIUseForThisModel(models)
-                    arch = whatArchitectureIsThisModel(models)
-                    process = inference(tracks, model_params,models,gpu=args.gpu,hep=args.high_end_process,wsize=args.window_size,agr=args.aggressiveness,tta=args.tta,oi=args.output_image,de=args.deepextraction,pp=args.postprocess,arch=arch)
-                    process.inference()
-        elif 'https://' in args.input:
-            for models in glob.glob('models/v5_new/*'):
-                model_params = whatParameterDoIUseForThisModel(models)
-                arch = whatArchitectureIsThisModel(models)
-                process = inference(args.input,model_params,models,gpu=args.gpu,hep=args.high_end_process,wsize=args.window_size,agr=args.aggressiveness,tta=args.tta,oi=args.output_image,de=args.deepextraction,pp=args.postprocess,arch=arch)
-                process.YouTube()
-        else:
-            for models in glob.glob('models/v5_new/*'):
-                model_params = whatParameterDoIUseForThisModel(models)
-                arch = whatArchitectureIsThisModel(models)
-                process = inference(args.input,model_params,models,gpu=args.gpu,hep=args.high_end_process,wsize=args.window_size,agr=args.aggressiveness,tta=args.tta,oi=args.output_image,de=args.deepextraction,pp=args.postprocess,arch=arch)
-                process.inference()
-
-    #why would you do this... rip google drive lol
-    elif args.useAllModel == 'all':
-        if args.convert_all:
-            for tracks in glob.glob('tracks/*'):
-                for models in glob.glob('models/v5/*'):
-                    model_params = whatParameterDoIUseForThisModel(models)
-                    arch = whatArchitectureIsThisModel(models)
-                    process = inference(tracks, model_params,models,gpu=args.gpu,hep=args.high_end_process,wsize=args.window_size,agr=args.aggressiveness,tta=args.tta,oi=args.output_image,de=args.deepextraction,pp=args.postprocess,arch=arch)
-                    process.inference()
-                for models in glob.glob('models/v5_new/*'):
-                    model_params = whatParameterDoIUseForThisModel(models)
-                    arch = whatArchitectureIsThisModel(models)
-                    print('With {}:'.format(models))
-                    inference(tracks, model_params, models, args.gpu, args.high_end_process, args.window_size, args.aggressiveness, args.tta, args.output_image, args.deepextraction, args.postprocess,arch=arch)
-        elif 'https://' in args.input:
-            for models in glob.glob('models/v5/*'):
-                for tracks in glob.glob('tracks/*'):
-                    model_params = whatParameterDoIUseForThisModel(models)
-                    arch = whatArchitectureIsThisModel(models)
-                    process = inference(tracks,model_params,models,gpu=args.gpu,hep=args.high_end_process,wsize=args.window_size,agr=args.aggressiveness,tta=args.tta,oi=args.output_image,de=args.deepextraction,pp=args.postprocess,arch=arch)
-                    process.YouTube()
-            for models in glob.glob('models/v5_new/*'):
-                for tracks in glob.glob('tracks/*'):
-                    model_params = whatParameterDoIUseForThisModel(models)
-                    arch = whatArchitectureIsThisModel(models)
-                    process = inference(tracks,model_params,models,gpu=args.gpu,hep=args.high_end_process,wsize=args.window_size,agr=args.aggressiveness,tta=args.tta,oi=args.output_image,de=args.deepextraction,pp=args.postprocess,arch=arch)
-                    process.YouTube()
-        else:
-            for models in glob.glob('models/v5/*'):
-                model_params = whatParameterDoIUseForThisModel(models)
-                arch = whatArchitectureIsThisModel(models)
-                process = inference(args.input,model_params,models,gpu=args.gpu,hep=args.high_end_process,wsize=args.window_size,agr=args.aggressiveness,tta=args.tta,oi=args.output_image,de=args.deepextraction,pp=args.postprocess,arch=arch)
-                process.inference()
-            for models in glob.glob('models/v5_new/*'):
-                model_params = whatParameterDoIUseForThisModel(models)
-                arch = whatArchitectureIsThisModel(models)
-                process = inference(args.input,model_params,models,gpu=args.gpu,hep=args.high_end_process,wsize=args.window_size,agr=args.aggressiveness,tta=args.tta,oi=args.output_image,de=args.deepextraction,pp=args.postprocess,arch=arch)
-                process.inference()
-    elif args.convert_all:
-        for tracks in glob.glob('tracks/*'):
-            print('Now splitting: {}'.format(os.path.splitext(os.path.basename(tracks))[0]))
-            process = inference(tracks,args.model_params,args.pretrained_model,gpu=args.gpu,hep=args.high_end_process,wsize=args.window_size,agr=args.aggressiveness,tta=args.tta,oi=args.output_image,de=args.deepextraction,pp=args.postprocess,arch=arch,v=args.isVocal)
-            process.inference()
-            print('---------------------------------------------------------')
+            useModel = glob.glob(args.pretrained_model)
+        multi_file(useModel, args.input)
 
     else:
-        process = inference(args.input,args.model_params,args.pretrained_model,gpu=args.gpu,hep=args.high_end_process,wsize=args.window_size,agr=args.aggressiveness,tta=args.tta,oi=args.output_image,de=args.deepextraction,pp=args.postprocess,arch=arch,v=args.isVocal)
+        arch = args.nn_architecture
+        process = inference(args.input,args.model_params,args.pretrained_model,gpu=args.gpu,hep=args.high_end_process,wsize=args.window_size,agr=args.aggressiveness,tta=args.tta,oi=args.output_image,de=args.deepextraction,pp=args.postprocess,arch=arch,v=args.isVocal, pp_thres=args.pp_threshold, mrange=args.pp_min_range, fsize=args.pp_fade_size)
         if 'https://' in args.input:
             warnings.filterwarnings("ignore")
             process.YouTube()
