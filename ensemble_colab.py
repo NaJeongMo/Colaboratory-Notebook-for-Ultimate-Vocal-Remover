@@ -37,13 +37,32 @@ def ensembleIteration(count):
         i = count_temp - i
         result += i
     return result
-#take_lowest_val(param, o, inp, algorithm='invert',supress=False)
+def wave_to_spectrogram(wave, hop_length, n_fft):
+    wave_left = np.asfortranarray(wave[0])
+    wave_right = np.asfortranarray(wave[1])
+
+    spec_left = librosa.stft(wave_left, n_fft, hop_length=hop_length)
+    spec_right = librosa.stft(wave_right, n_fft, hop_length=hop_length)
+    spec = np.asfortranarray([spec_left, spec_right])
+
+    return spec
+def spectrogram_to_wave(spec, hop_length=1024):
+    spec_left = np.asfortranarray(spec[0])
+    spec_right = np.asfortranarray(spec[1])
+
+    wave_left = librosa.istft(spec_left, hop_length=hop_length)
+    wave_right = librosa.istft(spec_right, hop_length=hop_length)
+    wave = np.asfortranarray([wave_left, wave_right])
+
+    return wave
 def ens_tlv(hl, n_fft, o, inp, algorithm='invert',supress=False):
     w1,_ = librosa.load(inp[0], sr=44100, mono=False, res_type='kaiser_best')
     w2,_ = librosa.load(inp[1], sr=44100, mono=False, res_type='kaiser_best')
     w1,w2=crop(w1,w2)
-    t1 = spec_utils.wave_to_spectrogram(w1, hl, n_fft, False, False)
-    t2 = spec_utils.wave_to_spectrogram(w2, hl, n_fft, False, False)
+    # wave_to_spectrogram(wave, hop_length, n_fft, mp, multithreading):
+    # X_spec_s[d] = spec_utils.wave_to_spectrogram(X_wave[d], bp['hl'], bp['n_fft'], mp, True) # threading true
+    t1 = wave_to_spectrogram(w1, hl, n_fft)
+    t2 = wave_to_spectrogram(w2, hl, n_fft)
     if algorithm == 'invert':
         #print('using ALGORITHM: INVERT')
         y_spec_m = spec_utils.reduce_vocal_aggressively(t1, t2, 0.2)
@@ -64,7 +83,7 @@ def ens_tlv(hl, n_fft, o, inp, algorithm='invert',supress=False):
     if algorithm == 'comb_norm': # debug
         v_spec_m = t1+ t2
         v_spec_m /= 2
-    wav = spec_utils.spectrogram_to_wave(v_spec_m, hl, False, False)
+    wav = spectrogram_to_wave(v_spec_m, hl)
     if algorithm == 'comb_norm':
         wav = normalise(wav)
     sf.write('{}.wav'.format(o), wav.T, 44100)
