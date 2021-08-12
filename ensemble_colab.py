@@ -74,7 +74,10 @@ def whatParameterDoIUseForThisModel(modelname):
     if '4band' in modelname:
         parameter = 'modelparams/4band_44100.json'
     elif '3Band' in modelname:
-        parameter = 'modelparams/3band_44100.json'
+        if 'msb2' in modelname:
+            parameter = 'modelparams/3band_44100_msb2.json'
+        else:
+            parameter = 'modelparams/3band_44100.json'
     elif 'MIDSIDE' in modelname:
         parameter = 'modelparams/3band_44100_mid.json'
     elif '2Band' in modelname:
@@ -221,12 +224,9 @@ p.add_argument('--input', '-i', required=True, help='Input')
 p.add_argument('--model_ens', nargs='+', required=False, default=[], help='Ensemble the models of your choice') # MODEL RESULT ENSEMBLING
 p.add_argument('--temp','-T', help='temp file location',default='/content/temp')
 p.add_argument('--suppress', '-s', action='store_true', help='Hide Warnings')
-p.add_argument('--start', default=1)
-p.add_argument('--stop', default=1)
-p.add_argument('--increments', default=1)
 p.add_argument('--algo','-a', nargs='+', default=['min_mag','max_mag'], help='Algorithm to be used for instrumental and acapella. (In order)')
 
-p.add_argument('--high_end_process', '-H', type=str, choices=['none', 'bypass', 'mirroring', 'mirroring2'], default='none', help='Working with extending a low band model.')
+p.add_argument('--high_end_process', '-H', type=str, choices=['none', 'bypass', 'mirroring', 'mirroring2'], default='none')
 p.add_argument('--window_size', '-w', type=int, default=512, help='Window size')
 p.add_argument('--aggressiveness', '-A', type=float, default=0.07, help='Aggressiveness of separation')
 p.add_argument('--tta', '-t', action='store_true', help='Perform Test-Time-Augmentation to improve the separation quality.')

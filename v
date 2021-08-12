@@ -2,14 +2,14 @@
 
 REPORT ERRORS TO Hv#3868
 
-Removed Similarity Extractor cell
-Inference cell updates
-Bug fixes on Inference cell multiple processing
-Post-processing control added
-Added algorithm drop down for ensemble
+Pre-update:
+	Added new model slot
+	Added new model parameter
+	
+Fixed download bugs
+Fixed auto detect parameter not using the right parameter
 
 Known bugs:
-	Can't download as zip when a YouTube link is given
 	Ensemble sometimes gives earrape glitches
 
 My own mistake which is to be fixed next update, vocal models are duplicated lmao

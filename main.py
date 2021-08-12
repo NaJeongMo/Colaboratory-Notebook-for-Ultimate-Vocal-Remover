@@ -108,18 +108,23 @@ def take_lowest_val(param, o, inp, algorithm='invert',supress=False):
             
 
 def whatParameterDoIUseForThisModel(modelname):
+    modelname = modelname.lower()
     if '4band' in modelname:
         parameter = 'modelparams/4band_44100.json'
-    elif '3Band' in modelname:
-        parameter = 'modelparams/3band_44100.json'
-    elif 'MIDSIDE' in modelname:
+    elif '3band' in modelname:
+        if 'msb2' in modelname:
+            parameter = 'modelparams/3band_44100_msb2.json'
+        else:
+            parameter = 'modelparams/3band_44100.json'
+    elif 'midside' in modelname:
         parameter = 'modelparams/3band_44100_mid.json'
-    elif '2Band' in modelname:
+    elif '2band' in modelname:
         parameter = 'modelparams/2band_48000.json'
-    elif 'LOFI' in modelname:
+    elif 'lofi' in modelname:
         parameter = 'modelparams/2band_44100_lofi.json'
     else:
         parameter = 'modelparams/1band_sr44100_hl512.json'
+    print(parameter)
     return parameter
 
 class inference:
@@ -172,7 +177,7 @@ class inference:
                     X_wave[d] = np.asarray([X_wave[d], X_wave[d]])
             else:
                 X_wave[d] = librosa.resample(X_wave[d+1], mp.param['band'][d+1]['sr'], bp['sr'], res_type=bp['res_type'])
-            X_spec_s[d] = spec_utils.wave_to_spectrogram_mt(X_wave[d], bp['hl'], bp['n_fft'], mp.param['mid_side'], mp.param['reverse'])
+            X_spec_s[d] = spec_utils.wave_to_spectrogram(X_wave[d], bp['hl'], bp['n_fft'], mp, True) # threading true
             if d == bands_n and self.hep != 'none':
                 input_high_end_h = (bp['n_fft']//2 - bp['crop_stop']) + (mp.param['pre_filter_stop'] - mp.param['pre_filter_start'])
                 input_high_end = X_spec_s[d][:, bp['n_fft']//2-input_high_end_h:bp['n_fft']//2, :]
@@ -233,15 +238,17 @@ class inference:
 
             print('Performing Deep Extraction...')
             #take_lowest_val(param, o, inp, algorithm='invert')
+            if os.path.isdir('/content/tempde') == False:
+                os.mkdir('/content/tempde')
             take_lowest_val('modelparams/1band_sr44100_hl512.json',
-                            'ensembled/temp/difftemp_v',
-                            ['ensembled/temp/tempI.wav','ensembled/temp/tempV.wav'],
+                            '/content/tempde/difftemp_v',
+                            ['/content/tempde/tempI.wav','/content/tempde/tempV.wav'],
                             algorithm='min_mag')
             take_lowest_val('modelparams/1band_sr44100_hl512.json',
-                            'ensembled/temp/difftemp',
-                            ['ensembled/temp/tempI.wav','ensembled/temp/difftemp_v.wav'],
+                            '/content/tempde/difftemp',
+                            ['/content/tempde/tempI.wav','/content/tempde/difftemp_v.wav'],
                             algorithm='invertB')
-            os.rename('ensembled/temp/difftemp.wav',self.spth + '/{}_{}_DeepExtraction_Instruments.wav'.format(basename, model_name))
+            os.rename('/content/tempde/difftemp.wav',self.spth + '/{}_{}_DeepExtraction_Instruments.wav'.format(basename, model_name))
             print('Complete!')
         else: # args
             print('inverse stft of {}...'.format(stems['inst']), end=' ')
@@ -275,7 +282,7 @@ class inference:
             frmt = '251/140/250/139'
             print('YouTube Link detected')
         else:
-            print('Foreign link detected. Attempting to download.')
+            print('Non-YouTube link detected. Attempting to download.')
         opt = {'format': frmt, 'outtmpl': inputsha, 'updatetime': False, 'nocheckcertificate': True}
         print('Downloading...', end=' ')
         with hide_opt():
@@ -296,19 +303,20 @@ class inference:
         if os.path.isfile(inputsha):
             os.remove(inputsha)
 
+
 def whatArchitectureIsThisModel(modelname):
-    if 'arch-default' in modelname:
+    if 'arch-default' in modelname.lower():
         return 'default'
-    elif 'arch-34m' in modelname:
+    elif 'arch-34m' in modelname.lower():
         return '33966KB'
         #from lib import nets_33966KB as nets 
-    elif 'arch-124m' in modelname:
+    elif 'arch-124m' in modelname.lower():
         return '123821KB'
         #from lib import nets_123821KB as nets
-    elif 'arch-130m' in modelname:
+    elif 'arch-130m' in modelname.lower():
         return '129605KB'
         #from lib import nets_129605KB as nets
-    elif 'arch-500m' in modelname:
+    elif 'arch-500m' in modelname.lower():
         return '537238KB'
     else:
         print('Error! autoDetect_arch. Did you modify model filenames?')

@@ -6,6 +6,8 @@ import soundfile as sf
 import math
 import json
 import hashlib
+import threading
+
 from tqdm import tqdm
 
 
@@ -27,48 +29,40 @@ def crop_center(h1, h2):
     return h1
 
 
-def wave_to_spectrogram(wave, hop_length, n_fft, mid_side=False, reverse=False):
-    if reverse:
+def wave_to_spectrogram(wave, hop_length, n_fft, mp, multithreading):
+    if mp.param['reverse']:
         wave_left = np.flip(np.asfortranarray(wave[0]))
         wave_right = np.flip(np.asfortranarray(wave[1]))
-    elif mid_side:
+    elif mp.param['mid_side_b']:
+        wave_left = np.asfortranarray(np.add(wave[0], wave[1] * .5))
+        wave_right = np.asfortranarray(np.subtract(wave[1], wave[0] * .5))    
+    elif mp.param['mid_side_b2']:
+        wave_left = np.asfortranarray(np.add(wave[1], wave[0] * .5))
+        wave_right = np.asfortranarray(np.subtract(wave[0], wave[1] * .5))
+    elif mp.param['mid_side']:
         wave_left = np.asfortranarray(np.add(wave[0], wave[1]) / 2)
-        wave_right = np.asfortranarray(np.subtract(wave[0], wave[1]))
+        wave_right = np.asfortranarray(np.subtract(wave[0], wave[1]))    
+    elif mp.param['stereo_w']:
+        wave_left = np.asfortranarray(np.subtract(wave[0], wave[1] * .25))
+        wave_right = np.asfortranarray(np.subtract(wave[1], wave[0] * .25))
     else:
         wave_left = np.asfortranarray(wave[0])
         wave_right = np.asfortranarray(wave[1])
+      
+    if multithreading:
+        def run_thread(**kwargs):
+            global spec_left_mt
+            spec_left_mt = librosa.stft(**kwargs)
 
-    spec_left = librosa.stft(wave_left, n_fft, hop_length=hop_length)
-    spec_right = librosa.stft(wave_right, n_fft, hop_length=hop_length)
-    
-    spec = np.asfortranarray([spec_left, spec_right])
-
-    return spec
-   
-   
-def wave_to_spectrogram_mt(wave, hop_length, n_fft, mid_side=False, reverse=False):
-    import threading
-
-    if reverse:
-        wave_left = np.flip(np.asfortranarray(wave[0]))
-        wave_right = np.flip(np.asfortranarray(wave[1]))
-    elif mid_side:
-        wave_left = np.asfortranarray(np.add(wave[0], wave[1]) / 2)
-        wave_right = np.asfortranarray(np.subtract(wave[0], wave[1]))
+        thread = threading.Thread(target=run_thread, kwargs={'y': wave_left, 'n_fft': n_fft, 'hop_length': hop_length})
+        thread.start()
+        spec_right = librosa.stft(wave_right, n_fft, hop_length=hop_length)
+        thread.join()
+        spec = np.asfortranarray([spec_left_mt, spec_right])
     else:
-        wave_left = np.asfortranarray(wave[0])
-        wave_right = np.asfortranarray(wave[1])
-   
-    def run_thread(**kwargs):
-        global spec_left
-        spec_left = librosa.stft(**kwargs)
-
-    thread = threading.Thread(target=run_thread, kwargs={'y': wave_left, 'n_fft': n_fft, 'hop_length': hop_length})
-    thread.start()
-    spec_right = librosa.stft(wave_right, n_fft, hop_length=hop_length)
-    thread.join()
-    
-    spec = np.asfortranarray([spec_left, spec_right])
+        spec_left = librosa.stft(wave_left, n_fft, hop_length=hop_length)
+        spec_right = librosa.stft(wave_right, n_fft, hop_length=hop_length)
+        spec = np.asfortranarray([spec_left, spec_right])
 
     return spec
     
@@ -235,40 +229,35 @@ def cache_or_load(mix_path, inst_path, mp):
     return X_spec_m, y_spec_m
 
 
-def spectrogram_to_wave(spec, hop_length, mid_side, reverse):
-    spec_left = np.asfortranarray(spec[0])
-    spec_right = np.asfortranarray(spec[1])
-
-    wave_left = librosa.istft(spec_left, hop_length=hop_length)
-    wave_right = librosa.istft(spec_right, hop_length=hop_length)
-
-    if reverse:
-        return np.asfortranarray([np.flip(wave_left), np.flip(wave_right)])
-    elif mid_side:
-        return np.asfortranarray([np.add(wave_left, wave_right / 2), np.subtract(wave_left, wave_right / 2)])
-    else:
-        return np.asfortranarray([wave_left, wave_right])
-    
-    
-def spectrogram_to_wave_mt(spec, hop_length, mid_side, reverse):
+def spectrogram_to_wave(spec, hop_length, mp, multithreading):
     import threading
 
     spec_left = np.asfortranarray(spec[0])
     spec_right = np.asfortranarray(spec[1])
     
-    def run_thread(**kwargs):
-        global wave_left
-        wave_left = librosa.istft(**kwargs)
-        
-    thread = threading.Thread(target=run_thread, kwargs={'stft_matrix': spec_left, 'hop_length': hop_length})
-    thread.start()
-    wave_right = librosa.istft(spec_right, hop_length=hop_length)
-    thread.join()   
+    if multithreading:
+        def run_thread(**kwargs):
+            global wave_left
+            wave_left = librosa.istft(**kwargs)
+            
+        thread = threading.Thread(target=run_thread, kwargs={'stft_matrix': spec_left, 'hop_length': hop_length})
+        thread.start()
+        wave_right = librosa.istft(spec_right, hop_length=hop_length)
+        thread.join()   
+    else:
+        wave_left = librosa.istft(spec_left, hop_length=hop_length)
+        wave_right = librosa.istft(spec_right, hop_length=hop_length)
     
-    if reverse:
+    if mp.param['reverse']:
         return np.asfortranarray([np.flip(wave_left), np.flip(wave_right)])
-    elif mid_side:
+    elif mp.param['mid_side_b']:
+        return np.asfortranarray([np.subtract(wave_left / 1.25, .4 * wave_right), np.add(wave_right / 1.25, .4 * wave_left)])       
+    elif mp.param['mid_side_b2']:
+        return np.asfortranarray([np.add(wave_right / 1.25, .4 * wave_left), np.subtract(wave_left / 1.25, .4 * wave_right)])    
+    elif mp.param['mid_side']:
         return np.asfortranarray([np.add(wave_left, wave_right / 2), np.subtract(wave_left, wave_right / 2)])
+    elif mp.param['stereo_w']:
+        return np.asfortranarray([np.add(wave_left, wave_right * .25) / 0.9375, np.add(wave_right, wave_left * .25) / 0.9375])
     else:
         return np.asfortranarray([wave_left, wave_right])
     
@@ -277,21 +266,6 @@ def cmb_spectrogram_to_wave(spec_m, mp, extra_bins_h=None, extra_bins=None):
     wave_band = {}
     bands_n = len(mp.param['band'])    
     offset = 0
-    
-    #if False:
-    #    from scipy import ndimage
-    #    
-    #    intersect_h2 = 167
-    #    intersect_y2 = 67
-    #    intersect_h1 = 62
-    #    intersect_y1 = 244
-
-    #    intersect_left = ndimage.zoom(spec_m[0, intersect_y1:intersect_y1+intersect_h1, :].real, zoom=(intersect_h2 / intersect_h1, 1.0), order=3) * 6
-    #    intersect_right = ndimage.zoom(spec_m[1, intersect_y1:intersect_y1+intersect_h1, :].real, zoom=(intersect_h2 / intersect_h1, 1.0), order=3) * 6
-    #    s = intersect_y2+intersect_left.shape[0]
-        
-    #    spec_m[0, intersect_y2:s, :] = np.where(np.abs(spec_m[0, intersect_y2:s, :]) <= np.abs(intersect_left) * 1.5, spec_m[0, intersect_y2:s, :], intersect_left)
-    #    spec_m[1, intersect_y2:s, :] = np.where(np.abs(spec_m[1, intersect_y2:s, :]) <= np.abs(intersect_right) * 1.5, spec_m[1, intersect_y2:s, :], intersect_right)
 
     for d in range(1, bands_n + 1):
         bp = mp.param['band'][d]
@@ -307,22 +281,68 @@ def cmb_spectrogram_to_wave(spec_m, mp, extra_bins_h=None, extra_bins=None):
             if bp['hpf_start'] > 0:
                 spec_s = fft_hp_filter(spec_s, bp['hpf_start'], bp['hpf_stop'] - 1)
             if bands_n == 1:
-                wave = spectrogram_to_wave_mt(spec_s, bp['hl'], mp.param['mid_side'], mp.param['reverse'])
+                wave = spectrogram_to_wave(spec_s, bp['hl'], mp, False)
             else:
-                wave = np.add(wave, spectrogram_to_wave_mt(spec_s, bp['hl'], mp.param['mid_side'], mp.param['reverse']))
+                wave = np.add(wave, spectrogram_to_wave(spec_s, bp['hl'], mp, False))
         else:
             sr = mp.param['band'][d+1]['sr']
             if d == 1: # lower
                 spec_s = fft_lp_filter(spec_s, bp['lpf_start'], bp['lpf_stop'])
-                wave = librosa.resample(spectrogram_to_wave_mt(spec_s, bp['hl'], mp.param['mid_side'], mp.param['reverse']), bp['sr'], sr, res_type="sinc_fastest")
+                wave = librosa.resample(spectrogram_to_wave(spec_s, bp['hl'], mp, False), bp['sr'], sr, res_type="sinc_fastest")
             else: # mid
                 spec_s = fft_hp_filter(spec_s, bp['hpf_start'], bp['hpf_stop'] - 1)
                 spec_s = fft_lp_filter(spec_s, bp['lpf_start'], bp['lpf_stop'])
-                wave2 = np.add(wave, spectrogram_to_wave_mt(spec_s, bp['hl'], mp.param['mid_side'], mp.param['reverse']))
+                wave2 = np.add(wave, spectrogram_to_wave(spec_s, bp['hl'], mp, False))
                 wave = librosa.resample(wave2, bp['sr'], sr, res_type="sinc_fastest")
         
     return wave.T
+def cmb_spectrogram_to_wave_ffmpeg(spec_m, mp, tmp_basename, extra_bins_h=None, extra_bins=None):
+    import subprocess
 
+    bands_n = len(mp.param['band'])    
+    offset = 0
+    ffmprc = {}
+
+    for d in range(1, bands_n + 1):
+        bp = mp.param['band'][d]
+        spec_s = np.ndarray(shape=(2, bp['n_fft'] // 2 + 1, spec_m.shape[2]), dtype=complex)
+        h = bp['crop_stop'] - bp['crop_start']
+        spec_s[:, bp['crop_start']:bp['crop_stop'], :] = spec_m[:, offset:offset+h, :]
+        tmp_wav = '{}_cmb_spectrogram_to_wave_b{}_sr{}'.format(tmp_basename, d, str(bp['sr']) + '.wav')
+        tmp_wav2 = '{}_cmb_spectrogram_to_wave_b{}_sr{}'.format(tmp_basename, d, str(mp.param['sr']) + '.wav')
+        
+        offset += h
+        if d == bands_n: # high-end
+            if extra_bins_h: # if --high_end_process bypass
+                max_bin = bp['n_fft'] // 2
+                spec_s[:, max_bin-extra_bins_h:max_bin, :] = extra_bins[:, :extra_bins_h, :]
+            if bp['hpf_start'] > 0:
+                spec_s = fft_hp_filter(spec_s, bp['hpf_start'], bp['hpf_stop'] - 1)
+            if bands_n == 1:
+                wave = spectrogram_to_wave(spec_s, bp['hl'], mp, False)
+            else:
+                wave = spectrogram_to_wave(spec_s, bp['hl'], mp, False)
+        else:
+            if d == 1: # lower
+                spec_s = fft_lp_filter(spec_s, bp['lpf_start'], bp['lpf_stop'])
+            else: # mid
+                spec_s = fft_hp_filter(spec_s, bp['hpf_start'], bp['hpf_stop'] - 1)
+                spec_s = fft_lp_filter(spec_s, bp['lpf_start'], bp['lpf_stop'])
+
+            sf.write(tmp_wav, spectrogram_to_wave(spec_s, bp['hl'], mp, False).T, bp['sr'])
+            ffmprc[d] = subprocess.Popen(['ffmpeg', '-hide_banner', '-loglevel', 'panic', '-y', '-i', tmp_wav, '-ar', str(mp.param['sr']), '-ac', '2', '-c:a', 'pcm_s16le', tmp_wav2])
+
+    for s in ffmprc:
+        ffmprc[s].communicate()
+        
+    for d in range(bands_n - 1, 0, -1):
+        os.remove(f'{tmp_basename}_cmb_spectrogram_to_wave_b{d}_sr' + str(mp.param['band'][d]['sr']) + '.wav')
+        tmp_wav2 = f'{tmp_basename}_cmb_spectrogram_to_wave_b{d}_sr' + str(mp.param['sr']) + '.wav'
+        wave2, _ = librosa.load(tmp_wav2, mp.param['sr'], False, dtype=np.float32, res_type="sinc_fastest")
+        os.remove(tmp_wav2)
+        wave = np.add(wave, wave2)
+
+    return wave.T
 
 def fft_lp_filter(spec, bin_start, bin_stop):
     g = 1.0
