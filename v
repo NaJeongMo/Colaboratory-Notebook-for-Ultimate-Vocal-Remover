@@ -2,9 +2,9 @@
 
 REPORT ERRORS TO Hv#3868
 
-Pre-update:
-	Added new model slot
-	Added new model parameter
+Added new model slot
+Added new model parameter
+added new BV Model
 	
 Fixed download bugs
 Fixed auto detect parameter not using the right parameter
