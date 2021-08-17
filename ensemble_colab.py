@@ -90,21 +90,22 @@ def ens_tlv(hl, n_fft, o, inp, algorithm='invert',supress=False):
     del t1, t2, w1, w2, _, v_spec_m
 
 def whatParameterDoIUseForThisModel(modelname):
+    modelname = modelname.lower()
     if '4band' in modelname:
         parameter = 'modelparams/4band_44100.json'
-    elif '3Band' in modelname:
+    elif '3band' in modelname:
         if 'msb2' in modelname:
             parameter = 'modelparams/3band_44100_msb2.json'
         else:
             parameter = 'modelparams/3band_44100.json'
-    elif 'MIDSIDE' in modelname:
+    elif 'midside' in modelname:
         parameter = 'modelparams/3band_44100_mid.json'
-    elif '2Band' in modelname:
+    elif '2band' in modelname:
         if '32000' in modelname:
             parameter = 'modelparams/2band_32000.json' 
         else:
             parameter = 'modelparams/2band_48000.json'
-    elif 'LOFI' in modelname:
+    elif 'lofi' in modelname:
         parameter = 'modelparams/2band_44100_lofi.json'
     else:
         if '32000' in modelname:
@@ -114,6 +115,7 @@ def whatParameterDoIUseForThisModel(modelname):
     return parameter
 
 def whatArchitectureIsThisModel(modelname):
+        modelname = modelname.lower()
         if 'arch-default' in modelname:
             return 'default'
         elif 'arch-34m' in modelname:
