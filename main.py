@@ -66,9 +66,9 @@ def take_lowest_val(param, o, inp, algorithm='invert',supress=False):
             y_wave[d] = librosa.resample(y_wave[d+1], mp.param['band'][d+1]['sr'], bp['sr'], res_type=bp['res_type'])
         
         X_wave[d], y_wave[d] = spec_utils.align_wave_head_and_tail(X_wave[d], y_wave[d])
-        
-        X_spec_s[d] = spec_utils.wave_to_spectrogram(X_wave[d], bp['hl'], bp['n_fft'], mp.param['mid_side'], mp.param['reverse'])
-        y_spec_s[d] = spec_utils.wave_to_spectrogram(y_wave[d], bp['hl'], bp['n_fft'], mp.param['mid_side'], mp.param['reverse']) 
+        ##wave_to_spectrogram(wave, hop_length, n_fft, mp, multithreading)
+        X_spec_s[d] = spec_utils.wave_to_spectrogram(X_wave[d], bp['hl'], bp['n_fft'], mp, False)
+        y_spec_s[d] = spec_utils.wave_to_spectrogram(y_wave[d], bp['hl'], bp['n_fft'], mp, False) 
         if supress == False:
             print('ok')
     del X_wave, y_wave
@@ -215,17 +215,15 @@ class inference:
         else:
             wave = spec_utils.cmb_spectrogram_to_wave(y_spec_m, mp)
         if self.de: # deep extraction
-            print('done')
+            #print('done')
             model_name = os.path.splitext(os.path.basename(self.ptm))[0]
+            print('inverse stft of {}...'.format(stems['inst']), end=' ')
             sf.write(os.path.join(self.spth, '{}_{}_{}.wav'.format(basename, model_name, stems['inst'])), wave, mp.param['sr'])
-            sf.write(os.path.join('ensembled/temp', 'tempI.wav'.format(basename, model_name, stems['inst'])), wave, mp.param['sr'])
-            #vocals
-            print('inverse stft of {}...'.format(stems['vocals']), end=' ')
-            wave = spec_utils.cmb_spectrogram_to_wave(v_spec_m, mp)
             print('done')
+            wave = spec_utils.cmb_spectrogram_to_wave(v_spec_m, mp)
+            print('inverse stft of {}...'.format(stems['vocals']), end=' ')
             sf.write(os.path.join(self.spth, '{}_{}_{}.wav'.format(basename, model_name, stems['vocals'])), wave, mp.param['sr'])
-            sf.write(os.path.join('ensembled/temp', 'tempV.wav'.format(basename, model_name, stems['vocals'])), wave, mp.param['sr'])
-
+            print('done')
             if self.oi:
                 with open('{}_{}.jpg'.format(basename, stems['inst']), mode='wb') as f:
                     image = spec_utils.spectrogram_to_image(y_spec_m)
@@ -236,19 +234,31 @@ class inference:
                     _, bin_image = cv2.imencode('.jpg', image)
                     bin_image.tofile(f)
 
-            print('Performing Deep Extraction...')
-            #take_lowest_val(param, o, inp, algorithm='invert')
+            print('Performing Deep Extraction...', end = ' ')
+            #take_lowest_val(param, o, inp, algorithm='invert',supress=False)
             if os.path.isdir('/content/tempde') == False:
                 os.mkdir('/content/tempde')
             take_lowest_val('modelparams/1band_sr44100_hl512.json',
                             '/content/tempde/difftemp_v',
-                            ['/content/tempde/tempI.wav','/content/tempde/tempV.wav'],
-                            algorithm='min_mag')
+                            [os.path.join(self.spth, '{}_{}_{}.wav'.format(basename, model_name, stems['vocals'])),os.path.join(self.spth, '{}_{}_{}.wav'.format(basename, model_name, stems['inst']))],
+                            algorithm='min_mag',
+                            supress=True)
             take_lowest_val('modelparams/1band_sr44100_hl512.json',
                             '/content/tempde/difftemp',
-                            ['/content/tempde/tempI.wav','/content/tempde/difftemp_v.wav'],
-                            algorithm='invertB')
-            os.rename('/content/tempde/difftemp.wav',self.spth + '/{}_{}_DeepExtraction_Instruments.wav'.format(basename, model_name))
+                            ['/content/tempde/difftemp_v.wav',os.path.join(self.spth, '{}_{}_{}.wav'.format(basename, model_name, stems['inst']))],
+                            algorithm='invert',
+                            supress=True)
+            os.rename('/content/tempde/difftemp.wav','/content/tempde/{}_{}_DeepExtraction_Instruments.wav'.format(basename, model_name))
+            if os.path.isfile(self.spth+'/{}_{}_DeepExtraction_Instruments.wav'.format(basename, model_name)):
+                os.remove(self.spth+'/{}_{}_DeepExtraction_Instruments.wav'.format(basename, model_name))
+            shutil.move('/content/tempde/{}_{}_DeepExtraction_Instruments.wav'.format(basename, model_name),self.spth)
+            # VOCALS REMNANTS
+            if os.path.isfile(self.spth+'/{}_{}_cDeepExtraction_Vocals.wav'.format(basename, model_name)):
+                os.remove(self.spth+'/{}_{}_cDeepExtraction_Vocals.wav'.format(basename, model_name))
+            excess,_ = librosa.load('/content/tempde/difftemp_v.wav',mono=False,sr=44100)
+            _vocal,_ = librosa.load(os.path.join(self.spth, '{}_{}_{}.wav'.format(basename, model_name, stems['vocals'])),
+                                    mono=False,sr=44100)
+            sf.write(self.spth + '/{}_{}_cDeepExtraction_Vocals.wav'.format(basename,model_name),excess.T+_vocal.T,44100)
             print('Complete!')
         else: # args
             print('inverse stft of {}...'.format(stems['inst']), end=' ')
