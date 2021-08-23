@@ -184,11 +184,6 @@ class inference:
         X_spec_m = spec_utils.combine_spectrograms(X_spec_s, mp)
         del X_wave, X_spec_s
         print('done')
-        # process -------------------------------
-        #if 'https://' in args.input:
-        #    print('splitting {}'.format(desc['title'])) # desc from YouTube()
-        #else:
-        #    print('splitting {}'.format(os.path.splitext(os.path.basename(input))[0]))
         vr = _inference.VocalRemover(model, device, self.wsize) # vr module
         if self.tta:
             pred, X_mag, X_phase = vr.inference_tta(X_spec_m, {'value': self.agr, 'split_bin': mp.param['band'][1]['crop_stop']})
@@ -240,12 +235,12 @@ class inference:
                 os.mkdir('/content/tempde')
             take_lowest_val('modelparams/1band_sr44100_hl512.json',
                             '/content/tempde/difftemp_v',
-                            [os.path.join(self.spth, '{}_{}_{}.wav'.format(basename, model_name, stems['vocals'])),os.path.join(self.spth, '{}_{}_{}.wav'.format(basename, model_name, stems['inst']))],
+                            [os.path.join(self.spth, '{}_{}_{}.wav'.format(basename, model_name, 'Vocals')),os.path.join(self.spth, '{}_{}_{}.wav'.format(basename, model_name, 'Instruments'))],
                             algorithm='min_mag',
                             supress=True)
             take_lowest_val('modelparams/1band_sr44100_hl512.json',
                             '/content/tempde/difftemp',
-                            ['/content/tempde/difftemp_v.wav',os.path.join(self.spth, '{}_{}_{}.wav'.format(basename, model_name, stems['inst']))],
+                            ['/content/tempde/difftemp_v.wav',os.path.join(self.spth, '{}_{}_{}.wav'.format(basename, model_name, 'Instruments'))],
                             algorithm='invert',
                             supress=True)
             os.rename('/content/tempde/difftemp.wav','/content/tempde/{}_{}_DeepExtraction_Instruments.wav'.format(basename, model_name))
@@ -253,12 +248,12 @@ class inference:
                 os.remove(self.spth+'/{}_{}_DeepExtraction_Instruments.wav'.format(basename, model_name))
             shutil.move('/content/tempde/{}_{}_DeepExtraction_Instruments.wav'.format(basename, model_name),self.spth)
             # VOCALS REMNANTS
-            if os.path.isfile(self.spth+'/{}_{}_cDeepExtraction_Vocals.wav'.format(basename, model_name)):
-                os.remove(self.spth+'/{}_{}_cDeepExtraction_Vocals.wav'.format(basename, model_name))
+            if os.path.isfile(self.spth+'/{}_{}_DeepExtraction_Vocals.wav'.format(basename, model_name)):
+                os.remove(self.spth+'/{}_{}_DeepExtraction_Vocals.wav'.format(basename, model_name))
             excess,_ = librosa.load('/content/tempde/difftemp_v.wav',mono=False,sr=44100)
-            _vocal,_ = librosa.load(os.path.join(self.spth, '{}_{}_{}.wav'.format(basename, model_name, stems['vocals'])),
+            _vocal,_ = librosa.load(os.path.join(self.spth, '{}_{}_{}.wav'.format(basename, model_name, 'Vocals')),
                                     mono=False,sr=44100)
-            sf.write(self.spth + '/{}_{}_cDeepExtraction_Vocals.wav'.format(basename,model_name),excess.T+_vocal.T,44100)
+            sf.write(self.spth + '/{}_{}_DeepExtraction_Vocals.wav'.format(basename,model_name),excess.T+_vocal.T,44100)
             print('Complete!')
         else: # args
             print('inverse stft of {}...'.format(stems['inst']), end=' ')
@@ -307,8 +302,12 @@ class inference:
         self.inference()
         os.rename("separated/{}_Instruments.wav".format(inmodname), 'separated/' + sanitize_filename(titlename) + '_{}_Instruments.wav'.format(modname))
         os.rename("separated/{}_Vocals.wav".format(inmodname), 'separated/' + sanitize_filename(titlename) + '_{}_Vocals.wav'.format(modname))
+        stems = {'inst': 'Instruments', 'vocals': 'Vocals'}
         if self.de:
-            os.rename("separated/{}_DeepExtraction_Instruments.wav".format(inmodname), 'separated/' + sanitize_filename(titlename) + '_DeepExtraction_Instruments.wav')
+            if self.v:
+                stems = {'inst': 'Vocals', 'vocals': 'Instruments'}
+            os.rename("separated/{}_DeepExtraction_{}.wav".format(inmodname,stems['inst']), 'separated/' + '{}_{}_DeepExtraction_{}.wav'.format(sanitize_filename(titlename),modname,stems['inst']))
+            os.rename("separated/{}_DeepExtraction_{}.wav".format(inmodname,stems['vocals']), 'separated/' + '{}_{}_DeepExtraction_{}.wav'.format(sanitize_filename(titlename),modname,stems['vocals']))
             os.remove(inputsha)
         if os.path.isfile(inputsha):
             os.remove(inputsha)
