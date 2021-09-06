@@ -8,26 +8,16 @@ import librosa
 import random
 import shutil
 
-import torch
-
-import time
-import math
 import glob
 import sys
 import os
 
 from lib.model_param_init import ModelParameters
-#from main import take_lowest_val as ens_tlv
-from main import normalise
+import main
 from main import inference
+from lib import automation
 from lib import spec_utils
 
-def crop(a,b, isMono=False):
-    l = min([a[0].size, b[0].size])
-    if isMono:
-        return a[:l], b[:l]
-    else:
-        return a[:l,:l], b[:l,:l]
 
 def ensembleIteration(count):
     count -= 1
@@ -37,101 +27,7 @@ def ensembleIteration(count):
         i = count_temp - i
         result += i
     return result
-def wave_to_spectrogram(wave, hop_length, n_fft):
-    wave_left = np.asfortranarray(wave[0])
-    wave_right = np.asfortranarray(wave[1])
 
-    spec_left = librosa.stft(wave_left, n_fft, hop_length=hop_length)
-    spec_right = librosa.stft(wave_right, n_fft, hop_length=hop_length)
-    spec = np.asfortranarray([spec_left, spec_right])
-
-    return spec
-def spectrogram_to_wave(spec, hop_length=1024):
-    spec_left = np.asfortranarray(spec[0])
-    spec_right = np.asfortranarray(spec[1])
-
-    wave_left = librosa.istft(spec_left, hop_length=hop_length)
-    wave_right = librosa.istft(spec_right, hop_length=hop_length)
-    wave = np.asfortranarray([wave_left, wave_right])
-
-    return wave
-def ens_tlv(hl, n_fft, o, inp, algorithm='invert',supress=False):
-    w1,_ = librosa.load(inp[0], sr=44100, mono=False, res_type='kaiser_best')
-    w2,_ = librosa.load(inp[1], sr=44100, mono=False, res_type='kaiser_best')
-    w1,w2=crop(w1,w2)
-    # wave_to_spectrogram(wave, hop_length, n_fft, mp, multithreading):
-    # X_spec_s[d] = spec_utils.wave_to_spectrogram(X_wave[d], bp['hl'], bp['n_fft'], mp, True) # threading true
-    t1 = wave_to_spectrogram(w1, hl, n_fft)
-    t2 = wave_to_spectrogram(w2, hl, n_fft)
-    if algorithm == 'invert':
-        #print('using ALGORITHM: INVERT')
-        y_spec_m = spec_utils.reduce_vocal_aggressively(t1, t2, 0.2)
-        v_spec_m = t1 - t2
-    if algorithm == 'min_mag':
-        #print('using ALGORITHM: MIN_MAG')
-        v_spec_m = np.where(np.abs(t1) <= np.abs(t2), t1, t2)
-    if algorithm == 'max_mag':
-        #print('using ALGORITHM: MAX_MAG')
-        v_spec_m = np.where(np.abs(t1) >= np.abs(t2), t1, t2)
-    if algorithm == 'np_min':
-        #print('using ALGORITHM: MIN_MAG')
-        v_spec_m = np.minimum(t1,t2)
-    if algorithm == 'np_max':
-        #print('using ALGORITHM: MAX_MAG')
-        v_spec_m = np.maximum(t1,t2)
-
-    if algorithm == 'comb_norm': # debug
-        v_spec_m = t1+ t2
-        v_spec_m /= 2
-    wav = spectrogram_to_wave(v_spec_m, hl)
-    if algorithm == 'comb_norm':
-        wav = normalise(wav)
-    sf.write('{}.wav'.format(o), wav.T, 44100)
-    del t1, t2, w1, w2, _, v_spec_m
-
-def whatParameterDoIUseForThisModel(modelname):
-    modelname = modelname.lower()
-    if '4band' in modelname:
-        parameter = 'modelparams/4band_44100.json'
-    elif '3band' in modelname:
-        if 'msb2' in modelname:
-            parameter = 'modelparams/3band_44100_msb2.json'
-        else:
-            parameter = 'modelparams/3band_44100.json'
-    elif 'midside' in modelname:
-        parameter = 'modelparams/3band_44100_mid.json'
-    elif '2band' in modelname:
-        if '32000' in modelname:
-            parameter = 'modelparams/2band_32000.json' 
-        else:
-            parameter = 'modelparams/2band_48000.json'
-    elif 'lofi' in modelname:
-        parameter = 'modelparams/2band_44100_lofi.json'
-    else:
-        if '32000' in modelname:
-            parameter = 'modelparams/1band_sr32000_hl512.json'
-        else:
-            parameter = 'modelparams/1band_sr44100_hl512.json'
-    return parameter
-
-def whatArchitectureIsThisModel(modelname):
-        modelname = modelname.lower()
-        if 'arch-default' in modelname:
-            return 'default'
-        elif 'arch-34m' in modelname:
-            return '33966KB'
-            #from lib import nets_33966KB as nets 
-        elif 'arch-124m' in modelname:
-            return '123821KB'
-            #from lib import nets_123821KB as nets
-        elif 'arch-130m' in modelname:
-            return '129605KB'
-            #from lib import nets_129605KB as nets
-        elif 'arch-500m' in modelname:
-            return '537238KB'
-        else:
-            print('Error! autoDetect_arch. Did you modify model filenames?')
-            return 'default'
 
 def ensemble(input,model=[],algorithms=['min_mag','max_mag']):
     if len(model) <= 1:
@@ -151,13 +47,17 @@ def ensemble(input,model=[],algorithms=['min_mag','max_mag']):
         for stages in range(1,int(len(model))+1):
             os.makedirs(rf'{savedtemp}/stage_{stages}')
         os.makedirs(rf'{savedtemp}/temp')
+    # filename defining
+    ins_algo = algorithms[0]
+    voc_algo = algorithms[1]
+    basename = os.path.splitext(os.path.basename(input))[0]
     print('Processing {} with {} models...'.format(os.path.splitext(os.path.basename(input))[0],len(model)))
     r = 0
     print('---------------------------------------------------------')
     for models in model:
         print('USING MODEL: {}'.format(os.path.splitext(os.path.basename(models))[0]))
-        model_params = whatParameterDoIUseForThisModel(models)
-        arch = whatArchitectureIsThisModel(models)
+        model_params = automation.whatParameterDoIUseForThisModel(models)
+        arch = automation.whatArchitectureIsThisModel(models)
         isVocalModel = False
         if args.flipVocals:
             if 'vocal' in models.lower():
@@ -189,26 +89,35 @@ def ensemble(input,model=[],algorithms=['min_mag','max_mag']):
     iter = ensembleIteration(r)
     progress_bar = tqdm(total=iter)
 
-    ins_algo = algorithms[0]
-    voc_algo = algorithms[1]
-    n_fft = 2048
-    hl = 512
+    stem_spth = {'inst':f'separated/{basename}_Ensembled_Instruments.wav',
+                'vocals':f'separated/{basename}_Ensembled_Vocals.wav'}
+
+    bsnme = os.path.splitext(os.path.basename(input))[0]
+
+    params = ModelParameters('modelparams/1band_sr44100_hl512.json')
     for a in range(0,r):
         if a + 1 > r-1:
             break
-        ens_tlv(hl, n_fft, f'{savedtemp}/stage_1/{a}',[f'{savedtemp}/temp/{a}_{modelname[a]}_Instruments.wav',f'{savedtemp}/temp/{a+1}_{modelname[a+1]}_Instruments.wav'], algorithm=ins_algo,supress=True)
-        progress_bar.update(1)
+        
+        spec_utils.spec_effects(params,
+                                [f'{savedtemp}/temp/{a}_{modelname[a]}_Instruments.wav',f'{savedtemp}/temp/{a+1}_{modelname[a+1]}_Instruments.wav'],
+                                f'{savedtemp}/stage_1/{a}',
+                                algorithm=ins_algo)
+        progress_bar.update(1)#
     # set 0
     for folder in range(2,r):
         for a in range(r-folder):
-            ens_tlv(hl, n_fft, f'{savedtemp}/stage_{folder}/{a}',[f'{savedtemp}/stage_{folder-1}/{a}.wav',f'{savedtemp}/stage_{folder-1}/{a+1}.wav'], algorithm=ins_algo,supress=True)
+            spec_utils.spec_effects(params,
+                                    [f'{savedtemp}/stage_{folder-1}/{a}.wav',f'{savedtemp}/stage_{folder-1}/{a+1}.wav'],
+                                    f'{savedtemp}/stage_{folder}/{a}',
+                                    algorithm=ins_algo)
             progress_bar.update(1)
-    if os.path.isfile(f'separated/{os.path.splitext(os.path.basename(input))[0]}_Ensembled_Instruments.wav'):
-        os.remove(f'separated/{os.path.splitext(os.path.basename(input))[0]}_Ensembled_Instruments.wav')
-    bsnme = os.path.splitext(os.path.basename(input))[0]
+    file = stem_spth['inst']
+    if os.path.isfile(file):
+        os.remove(file)
     final_ens = os.path.join(f'{savedtemp}/stage_{r-1}/','0.wav')
-    rename = os.path.join(f'{savedtemp}/stage_{r-1}/',f'{bsnme}_Ensembled_Instruments.wav')
-    os.rename(final_ens,rename)
+    os.rename(final_ens,
+                os.path.join(f'{savedtemp}/stage_{r-1}/',f'{bsnme}_Ensembled_Instruments.wav'))
     final_ens = f'{savedtemp}/stage_{r-1}/{bsnme}_Ensembled_Instruments.wav'
     if os.path.isfile(f'separated/{bsnme}'):
         final_ens = f'{savedtemp}/stage_{r-1}/{random.randint(0,22)}_{bsnme}_Ensembled_Instruments.wav'
@@ -221,19 +130,26 @@ def ensemble(input,model=[],algorithms=['min_mag','max_mag']):
     for a in range(0,r):
         if a + 1 > r-1:
             break
-        ens_tlv(hl, n_fft, f'{savedtemp}/stage_1/{a}',[f'{savedtemp}/temp/{a}_{modelname[a]}_Vocals.wav',f'{savedtemp}/temp/{a+1}_{modelname[a+1]}_Vocals.wav'], algorithm=voc_algo,supress=True)
+        #spec_effects(mp, inp, o, algorithm='invert')
+        spec_utils.spec_effects(params,
+                                [f'{savedtemp}/temp/{a}_{modelname[a]}_Vocals.wav',f'{savedtemp}/temp/{a+1}_{modelname[a+1]}_Vocals.wav'],
+                                f'{savedtemp}/stage_1/{a}',
+                                algorithm=voc_algo)
         progress_bar.update(1)
     # set 0
     for folder in range(2,r):
         for a in range(r-folder):
-            ens_tlv(hl, n_fft, f'{savedtemp}/stage_{folder}/{a}',[f'{savedtemp}/stage_{folder-1}/{a}.wav',f'{savedtemp}/stage_{folder-1}/{a+1}.wav'], algorithm=voc_algo,supress=True)
+            spec_utils.spec_effects(params,
+                                    [f'{savedtemp}/stage_{folder-1}/{a}.wav',f'{savedtemp}/stage_{folder-1}/{a+1}.wav'],
+                                    f'{savedtemp}/stage_{folder}/{a}',
+                                    algorithm=voc_algo)
             progress_bar.update(1)
-    if os.path.isfile(f'separated/{os.path.splitext(os.path.basename(input))[0]}_Ensembled_Vocals.wav'):
-        os.remove(f'separated/{os.path.splitext(os.path.basename(input))[0]}_Ensembled_Vocals.wav')
-    bsnme = os.path.splitext(os.path.basename(input))[0]
+    file = stem_spth['vocals']
+    if os.path.isfile(file):
+        os.remove(file)
     final_ens = os.path.join(f'{savedtemp}/stage_{r-1}/','0.wav')
-    rename = os.path.join(f'{savedtemp}/stage_{r-1}/',f'{bsnme}_Ensembled_Vocals.wav')
-    os.rename(final_ens,rename)
+    os.rename(final_ens,
+                os.path.join(f'{savedtemp}/stage_{r-1}/',f'{bsnme}_Ensembled_Vocals.wav'))
     final_ens = f'{savedtemp}/stage_{r-1}/{bsnme}_Ensembled_Vocals.wav'
     if os.path.isfile(f'separated/{bsnme}'):
         final_ens = f'{savedtemp}/stage_{r-1}/{random.randint(0,22)}_{bsnme}_Ensembled_Vocals.wav'
