@@ -8,8 +8,55 @@ import json
 import hashlib
 import threading
 
-from tqdm import tqdm
+def loadWave(inp, mp, hep='none'):
+    X_wave, X_spec_s = {},{}
+    bands_n = len(mp.param['band'])-1
+    X_wave[bands_n+1], _ = librosa.load(
+        inp, mp.param['band'][bands_n+1]['sr'], False, dtype=np.float32, res_type=mp.param['band'][bands_n+1]['res_type'])
+    if X_wave[bands_n+1].ndim == 1:
+        X_wave[bands_n+1] = np.asarray([X_wave[bands_n+1], X_wave[bands_n+1]])
+    X_spec_s[bands_n+1] = wave_to_spectrogram(X_wave[bands_n+1], mp.param['band'][bands_n+1]['hl'], mp.param['band'][bands_n+1]['n_fft'], mp, True)
+    if hep != 'none':
+        input_high_end_h = (mp.param['band'][bands_n+1]['n_fft']//2 - mp.param['band'][bands_n+1]['crop_stop']) + (mp.param['pre_filter_stop'] - mp.param['pre_filter_start'])
+        input_high_end = X_spec_s[bands_n+1][:, mp.param['band'][bands_n+1]['n_fft']//2-input_high_end_h:mp.param['band'][bands_n+1]['n_fft']//2, :]
+    else:
+        input_high_end_h = input_high_end = None
+    for d in range(bands_n, 0, -1):
+        bp = mp.param['band'][d]
+        X_wave[d] = librosa.resample(X_wave[d+1], mp.param['band'][d+1]['sr'], bp['sr'], res_type=bp['res_type'])
+        X_spec_s[d] = wave_to_spectrogram(X_wave[d], bp['hl'], bp['n_fft'], mp, True) # threading true
+    X_spec_m = combine_spectrograms(X_spec_s, mp)
+    del X_wave, X_spec_s
+    return X_spec_m, input_high_end_h, input_high_end
 
+def spec_effects(mp, inp, o, algorithm='invert'):
+    #X_wave, y_wave, X_spec_s, y_spec_s = {}, {}, {}, {}
+    X_spec_m,_,_ = loadWave(inp[0], mp)
+    y_spec_m,_,_ = loadWave(inp[1], mp)
+    X_spec_m,y_spec_m=align_wave_head_and_tail(X_spec_m,y_spec_m)
+    if algorithm == 'invert':
+        y_spec_m = reduce_vocal_aggressively(X_spec_m, y_spec_m, 0.2)
+        v_spec_m = X_spec_m - y_spec_m
+    if algorithm == 'min_mag':
+        v_spec_m = np.where(np.abs(X_spec_m) <= np.abs(y_spec_m), X_spec_m, y_spec_m)
+    if algorithm == 'max_mag':
+        v_spec_m = np.where(np.abs(X_spec_m) >= np.abs(y_spec_m), X_spec_m, y_spec_m)
+    if algorithm == 'comb_norm': # debug
+        v_spec_m = X_spec_m + y_spec_m
+    wave = cmb_spectrogram_to_wave(v_spec_m, mp)
+    if algorithm == 'comb_norm':
+        wave = normalise(wave)
+    sf.write('{}.wav'.format(o), wave, mp.param['sr'])
+
+#def normalise(wave):
+#    if max(abs(wave[0])) >= max(abs(wave[1])):
+#        wave *= 1/max(abs(wave[0]))
+#    elif max(abs(wave[0])) <= max(abs(wave[1])):
+#        wave *= 1/max(abs(wave[1]))
+#    return wave
+
+def normalise(wave):
+    return wave / max(np.max(wave), abs(np.min(wave)))
 
 def crop_center(h1, h2):
     h1_shape = h1.size()
