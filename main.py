@@ -1,410 +1,426 @@
-## type: ignore
-""" 
-This was supposed to be an importable module,
-but I got lazy so if you're planning to change everything here goodluck
-""" 
-from numpy.core.fromnumeric import take
-from pathvalidate import sanitize_filename
-import soundfile as sf
-from tqdm import tqdm
-import numpy as np
-import youtube_dl
-import importlib
-import argparse
-import warnings
-import os.path
-import librosa
-import hashlib
-import random
-import shutil
-
-import torch
-
-import wave
-import time
-import math
-import glob
-import cv2
-import sys
 import os
 
-from lib.model_param_init import ModelParameters
-from lib import vr as _inference
-from lib import spec_utils
+import librosa
+import numpy as np
+import soundfile as sf
+import math
+import json
+import hashlib
+import threading
 
-
-class hide_opt:
-    def __enter__(self):
-        self._original_stdout = sys.stdout
-        sys.stdout = open(os.devnull, 'w')
- 
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        sys.stdout.close()
-        sys.stdout = self._original_stdout
-def normalise(wave):
-    if max(abs(wave[0])) >= max(abs(wave[1])):
-        wave *= 1/max(abs(wave[0]))
-    elif max(abs(wave[0])) <= max(abs(wave[1])):
-        wave *= 1/max(abs(wave[1]))
-    return wave
-def take_lowest_val(param, o, inp, algorithm='invert',supress=False):
-    X_wave, y_wave, X_spec_s, y_spec_s = {}, {}, {}, {}
-    mp = ModelParameters(param)
-    for d in range(len(mp.param['band']), 0, -1):
-        if supress == False:
-            print('Band(s) {}'.format(d), end=' ')
-        
+def loadWave(inp, mp, hep='none'):
+    X_wave, X_spec_s = {},{}
+    bands_n = len(mp.param['band'])-1
+    X_wave[bands_n+1], _ = librosa.load(
+        inp, mp.param['band'][bands_n+1]['sr'], False, dtype=np.float32, res_type=mp.param['band'][bands_n+1]['res_type'])
+    if X_wave[bands_n+1].ndim == 1:
+        X_wave[bands_n+1] = np.asarray([X_wave[bands_n+1], X_wave[bands_n+1]])
+    X_spec_s[bands_n+1] = wave_to_spectrogram(X_wave[bands_n+1], mp.param['band'][bands_n+1]['hl'], mp.param['band'][bands_n+1]['n_fft'], mp, True)
+    if hep != 'none':
+        input_high_end_h = (mp.param['band'][bands_n+1]['n_fft']//2 - mp.param['band'][bands_n+1]['crop_stop']) + (mp.param['pre_filter_stop'] - mp.param['pre_filter_start'])
+        input_high_end = X_spec_s[bands_n+1][:, mp.param['band'][bands_n+1]['n_fft']//2-input_high_end_h:mp.param['band'][bands_n+1]['n_fft']//2, :]
+    else:
+        input_high_end_h = input_high_end = None
+    for d in range(bands_n, 0, -1):
         bp = mp.param['band'][d]
-                
-        if d == len(mp.param['band']): # high-end band
-            X_wave[d], _ = librosa.load(
-                inp[0], bp['sr'], mono=False, res_type=bp['res_type'])
-            y_wave[d], _ = librosa.load(
-                inp[1], bp['sr'], mono=False, res_type=bp['res_type'])
-        else: # lower bands
-            X_wave[d] = librosa.resample(X_wave[d+1], mp.param['band'][d+1]['sr'], bp['sr'], res_type=bp['res_type'])
-            y_wave[d] = librosa.resample(y_wave[d+1], mp.param['band'][d+1]['sr'], bp['sr'], res_type=bp['res_type'])
-        
-        X_wave[d], y_wave[d] = spec_utils.align_wave_head_and_tail(X_wave[d], y_wave[d])
-        ##wave_to_spectrogram(wave, hop_length, n_fft, mp, multithreading)
-        X_spec_s[d] = spec_utils.wave_to_spectrogram(X_wave[d], bp['hl'], bp['n_fft'], mp, False)
-        y_spec_s[d] = spec_utils.wave_to_spectrogram(y_wave[d], bp['hl'], bp['n_fft'], mp, False) 
-        if supress == False:
-            print('ok')
-    del X_wave, y_wave
-    X_spec_m = spec_utils.combine_spectrograms(X_spec_s, mp)
-    y_spec_m = spec_utils.combine_spectrograms(y_spec_s, mp)
-    if y_spec_m.shape != X_spec_m.shape:
-        print('Warning: The combined spectrograms are different!')   
-        print('X_spec_m: ' + str(X_spec_m.shape))
-        print('y_spec_m: ' + str(y_spec_m.shape))
+        X_wave[d] = librosa.resample(X_wave[d+1], mp.param['band'][d+1]['sr'], bp['sr'], res_type=bp['res_type'])
+        X_spec_s[d] = wave_to_spectrogram(X_wave[d], bp['hl'], bp['n_fft'], mp, True) # threading true
+    X_spec_m = combine_spectrograms(X_spec_s, mp)
+    del X_wave, X_spec_s
+    return X_spec_m, input_high_end_h, input_high_end
+
+def spec_effects(mp, inp, o, algorithm='invert'):
+    #X_wave, y_wave, X_spec_s, y_spec_s = {}, {}, {}, {}
+    X_spec_m,_,_ = loadWave(inp[0], mp)
+    y_spec_m,_,_ = loadWave(inp[1], mp)
+    X_spec_m,y_spec_m=align_wave_head_and_tail(X_spec_m,y_spec_m)
     if algorithm == 'invert':
-        #print('using ALGORITHM: INVERTB')
-        y_spec_m = spec_utils.reduce_vocal_aggressively(X_spec_m, y_spec_m, 0.2)
+        y_spec_m = reduce_vocal_aggressively(X_spec_m, y_spec_m, 0.2)
         v_spec_m = X_spec_m - y_spec_m
     if algorithm == 'min_mag':
-        #print('using ALGORITHM: MIN_MAG')
-        v_spec_mL = np.where(np.abs(y_spec_m[0]) <= np.abs(X_spec_m[0]), y_spec_m[0], X_spec_m[0])
-        v_spec_mR = np.where(np.abs(y_spec_m[1]) <= np.abs(X_spec_m[1]), y_spec_m[1], X_spec_m[1])
-        v_spec_m = np.asfortranarray([v_spec_mL,v_spec_mR])
-        del v_spec_mL,v_spec_mR
+        v_spec_m = np.where(np.abs(X_spec_m) <= np.abs(y_spec_m), X_spec_m, y_spec_m)
     if algorithm == 'max_mag':
-        #print('using ALGORITHM: MAX_MAG')
-        v_spec_mL = np.where(np.abs(y_spec_m[0]) >= np.abs(X_spec_m[0]), y_spec_m[0], X_spec_m[0])
-        v_spec_mR = np.where(np.abs(y_spec_m[1]) >= np.abs(X_spec_m[1]), y_spec_m[1], X_spec_m[1])
-        v_spec_m = np.asfortranarray([v_spec_mL,v_spec_mR])
-        del v_spec_mL,v_spec_mR
+        v_spec_m = np.where(np.abs(X_spec_m) >= np.abs(y_spec_m), X_spec_m, y_spec_m)
     if algorithm == 'comb_norm': # debug
-        v_spec_m = y_spec_m + X_spec_m
-        v_spec_m /= 2
-    
-    wav = spec_utils.cmb_spectrogram_to_wave(v_spec_m, mp)
+        v_spec_m = X_spec_m + y_spec_m
+    wave = cmb_spectrogram_to_wave(v_spec_m, mp)
     if algorithm == 'comb_norm':
-        wav = normalise(wav)
-    
-    sf.write('{}.wav'.format(o), wav, mp.param['sr'])
-    del v_spec_m,y_spec_m,X_spec_m,wav
+        wave = normalise(wave)
+    sf.write('{}.wav'.format(o), wave, mp.param['sr'])
 
-            
+#def normalise(wave):
+#    if max(abs(wave[0])) >= max(abs(wave[1])):
+#        wave *= 1/max(abs(wave[0]))
+#    elif max(abs(wave[0])) <= max(abs(wave[1])):
+#        wave *= 1/max(abs(wave[1]))
+#    return wave
 
-def whatParameterDoIUseForThisModel(modelname):
-    modelname = modelname.lower()
-    if '4band' in modelname:
-        parameter = 'modelparams/4band_44100.json'
-    elif '3band' in modelname:
-        if 'msb2' in modelname:
-            parameter = 'modelparams/3band_44100_msb2.json'
-        else:
-            parameter = 'modelparams/3band_44100.json'
-    elif 'midside' in modelname:
-        parameter = 'modelparams/3band_44100_mid.json'
-    elif '2band' in modelname:
-        parameter = 'modelparams/2band_48000.json'
-    elif 'lofi' in modelname:
-        parameter = 'modelparams/2band_44100_lofi.json'
+def normalise(wave):
+    return wave / max(np.max(wave), abs(np.min(wave)))
+
+def crop_center(h1, h2):
+    h1_shape = h1.size()
+    h2_shape = h2.size()
+
+    if h1_shape[3] == h2_shape[3]:
+        return h1
+    elif h1_shape[3] < h2_shape[3]:
+        raise ValueError('h1_shape[3] must be greater than h2_shape[3]')
+
+    # s_freq = (h2_shape[2] - h1_shape[2]) // 2
+    # e_freq = s_freq + h1_shape[2]
+    s_time = (h1_shape[3] - h2_shape[3]) // 2
+    e_time = s_time + h2_shape[3]
+    h1 = h1[:, :, :, s_time:e_time]
+
+    return h1
+
+
+def wave_to_spectrogram(wave, hop_length, n_fft, mp, multithreading):
+    if mp.param['reverse']:
+        wave_left = np.flip(np.asfortranarray(wave[0]))
+        wave_right = np.flip(np.asfortranarray(wave[1]))
+    elif mp.param['mid_side_b']:
+        wave_left = np.asfortranarray(np.add(wave[0], wave[1] * .5))
+        wave_right = np.asfortranarray(np.subtract(wave[1], wave[0] * .5))    
+    elif mp.param['mid_side_b2']:
+        wave_left = np.asfortranarray(np.add(wave[1], wave[0] * .5))
+        wave_right = np.asfortranarray(np.subtract(wave[0], wave[1] * .5))
+    elif mp.param['mid_side']:
+        wave_left = np.asfortranarray(np.add(wave[0], wave[1]) / 2)
+        wave_right = np.asfortranarray(np.subtract(wave[0], wave[1]))    
+    elif mp.param['stereo_w']:
+        wave_left = np.asfortranarray(np.subtract(wave[0], wave[1] * .25))
+        wave_right = np.asfortranarray(np.subtract(wave[1], wave[0] * .25))
     else:
-        parameter = 'modelparams/1band_sr44100_hl512.json'
-    print(parameter)
-    return parameter
+        wave_left = np.asfortranarray(wave[0])
+        wave_right = np.asfortranarray(wave[1])
+      
+    if multithreading:
+        def run_thread(**kwargs):
+            global spec_left_mt
+            spec_left_mt = librosa.stft(**kwargs)
 
-class inference:
-    def __init__(self, input, param, ptm, gpu=-1, hep='none', wsize=320, agr=0.07, tta=False, oi=False, de=False, v=False, spth='separated', fn='', pp=False, arch='default',
-                pp_thres = 0.2, mrange = 32, fsize = 64):
-        self.input = input
-        self.param = param
-        self.ptm = ptm
-        self.gpu = gpu
-        self.hep = hep
-        self.wsize = wsize
-        self.agr = agr
-        self.tta = tta
-        self.oi = oi
-        self.de = de
-        self.v = v
-        self.spth = spth
-        self.fn = fn
-        self.pp = pp
-        self.arch = arch
-        self.pp_thres = pp_thres
-        self.mrange = mrange
-        self.fsize = fsize
-    def inference(self):
-        nets = importlib.import_module('lib.nets' + f'_{self.arch}'.replace('_default', ''), package=None)
-        # load model -------------------------------
-        print('loading model...', end=' ')
-        mp = ModelParameters(self.param)
-        device = torch.device('cpu')
-        model = nets.CascadedASPPNet(mp.param['bins'] * 2)
-        model.load_state_dict(torch.load(self.ptm, map_location=device))
-        if torch.cuda.is_available() and self.gpu >= 0:
-            device = torch.device('cuda:{}'.format(self.gpu))
-            model.to(device)
-        print('done')
-        # stft of wave source -------------------------------
-        print('stft of wave source...', end=' ')
-        X_wave, X_spec_s = {},{}
-        if self.fn != '':
-            basename = self.fn
+        thread = threading.Thread(target=run_thread, kwargs={'y': wave_left, 'n_fft': n_fft, 'hop_length': hop_length})
+        thread.start()
+        spec_right = librosa.stft(wave_right, n_fft, hop_length=hop_length)
+        thread.join()
+        spec = np.asfortranarray([spec_left_mt, spec_right])
+    else:
+        spec_left = librosa.stft(wave_left, n_fft, hop_length=hop_length)
+        spec_right = librosa.stft(wave_right, n_fft, hop_length=hop_length)
+        spec = np.asfortranarray([spec_left, spec_right])
+
+    return spec
+    
+    
+def combine_spectrograms(specs, mp):
+    l = min([specs[i].shape[2] for i in specs])    
+    spec_c = np.zeros(shape=(2, mp.param['bins'] + 1, l), dtype=np.complex64)
+    offset = 0
+    bands_n = len(mp.param['band'])
+    
+    for d in range(1, bands_n + 1):
+        h = mp.param['band'][d]['crop_stop'] - mp.param['band'][d]['crop_start']
+        spec_c[:, offset:offset+h, :l] = specs[d][:, mp.param['band'][d]['crop_start']:mp.param['band'][d]['crop_stop'], :l]
+        offset += h
+        
+    if offset > mp.param['bins']:
+        raise ValueError('Too much bins')
+        
+    # lowpass fiter
+    if mp.param['pre_filter_start'] > 0: # and mp.param['band'][bands_n]['res_type'] in ['scipy', 'polyphase']:   
+        if bands_n == 1:
+            spec_c = fft_lp_filter(spec_c, mp.param['pre_filter_start'], mp.param['pre_filter_stop'])
         else:
-            basename = os.path.splitext(os.path.basename(self.input))[0]
-        bands_n = len(mp.param['band'])
-        for d in range(bands_n, 0, -1):
+            gp = 1        
+            for b in range(mp.param['pre_filter_start'] + 1, mp.param['pre_filter_stop']):
+                g = math.pow(10, -(b - mp.param['pre_filter_start']) * (3.5 - gp) / 20.0)
+                gp = g
+                spec_c[:, b, :] *= g
+
+    return np.asfortranarray(spec_c)
+    
+
+def spectrogram_to_image(spec, mode='magnitude'):
+    if mode == 'magnitude':
+        if np.iscomplexobj(spec):
+            y = np.abs(spec)
+        else:
+            y = spec
+        y = np.log10(y ** 2 + 1e-8)
+    elif mode == 'phase':
+        if np.iscomplexobj(spec):
+            y = np.angle(spec)
+        else:
+            y = spec
+
+    y -= y.min()
+    y *= 255 / y.max()
+    img = np.uint8(y)
+
+    if y.ndim == 3:
+        img = img.transpose(1, 2, 0)
+        img = np.concatenate([
+            np.max(img, axis=2, keepdims=True), img
+        ], axis=2)
+
+    return img
+
+
+def reduce_vocal_aggressively(X, y, softmask):
+    v = X - y
+    y_mag_tmp = np.abs(y)
+    v_mag_tmp = np.abs(v)
+
+    v_mask = v_mag_tmp > y_mag_tmp
+    y_mag = np.clip(y_mag_tmp - v_mag_tmp * v_mask * softmask, 0, np.inf)
+
+    return y_mag * np.exp(1.j * np.angle(y))
+
+
+def mask_silence(mag, ref, thres=0.2, min_range=64, fade_size=32):
+    if min_range < fade_size * 2:
+        raise ValueError('min_range must be >= fade_area * 2')
+
+    mag = mag.copy()
+
+    idx = np.where(ref.mean(axis=(0, 1)) < thres)[0]
+    starts = np.insert(idx[np.where(np.diff(idx) != 1)[0] + 1], 0, idx[0])
+    ends = np.append(idx[np.where(np.diff(idx) != 1)[0]], idx[-1])
+    uninformative = np.where(ends - starts > min_range)[0]
+    if len(uninformative) > 0:
+        starts = starts[uninformative]
+        ends = ends[uninformative]
+        old_e = None
+        for s, e in zip(starts, ends):
+            if old_e is not None and s - old_e < fade_size:
+                s = old_e - fade_size * 2
+
+            if s != 0:
+                weight = np.linspace(0, 1, fade_size)
+                mag[:, :, s:s + fade_size] += weight * ref[:, :, s:s + fade_size]
+            else:
+                s -= fade_size
+
+            if e != mag.shape[2]:
+                weight = np.linspace(1, 0, fade_size)
+                mag[:, :, e - fade_size:e] += weight * ref[:, :, e - fade_size:e]
+            else:
+                e += fade_size
+
+            mag[:, :, s + fade_size:e - fade_size] += ref[:, :, s + fade_size:e - fade_size]
+            old_e = e
+
+    return mag
+    
+
+def align_wave_head_and_tail(a, b, sr=0):
+    l = min([a[0].size, b[0].size])
+    
+    return a[:l,:l], b[:l,:l]
+    
+
+def cache_or_load(mix_path, inst_path, mp):
+    mix_basename = os.path.splitext(os.path.basename(mix_path))[0]
+    inst_basename = os.path.splitext(os.path.basename(inst_path))[0]
+
+    cache_dir = 'mph{}'.format(hashlib.sha1(json.dumps(mp.param, sort_keys=True).encode('utf-8')).hexdigest())
+    #mix_cache_dir = os.path.join(os.path.dirname(mix_path), cache_dir)
+    #inst_cache_dir = os.path.join(os.path.dirname(inst_path), cache_dir)
+    mix_cache_dir = os.path.join('cache', cache_dir)
+    inst_cache_dir = os.path.join('cache', cache_dir)
+
+    os.makedirs(mix_cache_dir, exist_ok=True)
+    os.makedirs(inst_cache_dir, exist_ok=True)
+
+    mix_cache_path = os.path.join(mix_cache_dir, mix_basename + '.npy')
+    inst_cache_path = os.path.join(inst_cache_dir, inst_basename + '.npy')
+
+    if os.path.exists(mix_cache_path) and os.path.exists(inst_cache_path):
+        X_spec_m = np.load(mix_cache_path)
+        y_spec_m = np.load(inst_cache_path)
+    else:
+        X_wave, y_wave, X_spec_s, y_spec_s = {}, {}, {}, {}
+         
+        for d in range(len(mp.param['band']), 0, -1):            
             bp = mp.param['band'][d]
-            if d == bands_n:
+                    
+            if d == len(mp.param['band']): # high-end band
                 X_wave[d], _ = librosa.load(
-                    self.input, bp['sr'], False, dtype=np.float32, res_type=bp['res_type'])
-                if X_wave[d].ndim == 1:
-                    X_wave[d] = np.asarray([X_wave[d], X_wave[d]])
-            else:
+                    mix_path, bp['sr'], False, dtype=np.float32, res_type=bp['res_type'])
+                y_wave[d], _ = librosa.load(
+                    inst_path, bp['sr'], False, dtype=np.float32, res_type=bp['res_type'])
+            else: # lower bands
                 X_wave[d] = librosa.resample(X_wave[d+1], mp.param['band'][d+1]['sr'], bp['sr'], res_type=bp['res_type'])
-            X_spec_s[d] = spec_utils.wave_to_spectrogram(X_wave[d], bp['hl'], bp['n_fft'], mp, True) # threading true
-            if d == bands_n and self.hep != 'none':
-                input_high_end_h = (bp['n_fft']//2 - bp['crop_stop']) + (mp.param['pre_filter_stop'] - mp.param['pre_filter_start'])
-                input_high_end = X_spec_s[d][:, bp['n_fft']//2-input_high_end_h:bp['n_fft']//2, :]
-        X_spec_m = spec_utils.combine_spectrograms(X_spec_s, mp)
-        del X_wave, X_spec_s
-        print('done')
-        vr = _inference.VocalRemover(model, device, self.wsize) # vr module
-        if self.tta:
-            pred, X_mag, X_phase = vr.inference_tta(X_spec_m, {'value': self.agr, 'split_bin': mp.param['band'][1]['crop_stop']})
-        else:
-            pred, X_mag, X_phase = vr.inference(X_spec_m, {'value': self.agr, 'split_bin': mp.param['band'][1]['crop_stop']})
-        if self.pp:
-            print('post processing...', end=' ')
-            pred_inv = np.clip(X_mag - pred, 0, np.inf)
-            pred = spec_utils.mask_silence(pred, pred_inv, thres=self.pp_thres, min_range=self.mrange, fade_size=self.fsize)
-            print('done')
-        # swap if v=True
-        if self.v:
-            stems = {'inst': 'Vocals', 'vocals': 'Instruments'}
-        else:
-            stems = {'inst': 'Instruments', 'vocals': 'Vocals'}
-        y_spec_m = pred * X_phase # instruments
-        v_spec_m = X_spec_m - y_spec_m # vocals
-        if self.hep == 'bypass':
-            wave = spec_utils.cmb_spectrogram_to_wave(y_spec_m, mp, input_high_end_h, input_high_end)
-        elif self.hep.startswith('mirroring'):       
-            input_high_end_ = spec_utils.mirroring(self.hep, y_spec_m, input_high_end, mp)
+                y_wave[d] = librosa.resample(y_wave[d+1], mp.param['band'][d+1]['sr'], bp['sr'], res_type=bp['res_type'])
             
-            wave = spec_utils.cmb_spectrogram_to_wave(y_spec_m, mp, input_high_end_h, input_high_end_)  
-        else:
-            wave = spec_utils.cmb_spectrogram_to_wave(y_spec_m, mp)
-        if self.de: # deep extraction
-            #print('done')
-            model_name = os.path.splitext(os.path.basename(self.ptm))[0]
-            print('inverse stft of {}...'.format(stems['inst']), end=' ')
-            sf.write(os.path.join(self.spth, '{}_{}_{}.wav'.format(basename, model_name, stems['inst'])), wave, mp.param['sr'])
-            print('done')
-            wave = spec_utils.cmb_spectrogram_to_wave(v_spec_m, mp)
-            print('inverse stft of {}...'.format(stems['vocals']), end=' ')
-            sf.write(os.path.join(self.spth, '{}_{}_{}.wav'.format(basename, model_name, stems['vocals'])), wave, mp.param['sr'])
-            print('done')
-            if self.oi:
-                with open('{}_{}.jpg'.format(basename, stems['inst']), mode='wb') as f:
-                    image = spec_utils.spectrogram_to_image(y_spec_m)
-                    _, bin_image = cv2.imencode('.jpg', image)
-                    bin_image.tofile(f)
-                with open('{}_{}.jpg'.format(basename, stems['vocals']), mode='wb') as f:
-                    image = spec_utils.spectrogram_to_image(v_spec_m)
-                    _, bin_image = cv2.imencode('.jpg', image)
-                    bin_image.tofile(f)
+            X_wave[d], y_wave[d] = align_wave_head_and_tail(X_wave[d], y_wave[d])
+            
+            X_spec_s[d] = wave_to_spectrogram(X_wave[d], bp['hl'], bp['n_fft'], mp.param['mid_side'], mp.param['reverse'])
+            y_spec_s[d] = wave_to_spectrogram(y_wave[d], bp['hl'], bp['n_fft'], mp.param['mid_side'], mp.param['reverse'])
+            
+        del X_wave, y_wave
+                 
+        X_spec_m = combine_spectrograms(X_spec_s, mp)
+        y_spec_m = combine_spectrograms(y_spec_s, mp)
+        
+        if X_spec_m.shape != y_spec_m.shape:
+            raise ValueError('The combined spectrograms are different: ' + mix_path)
 
-            print('Performing Deep Extraction...', end = ' ')
-            #take_lowest_val(param, o, inp, algorithm='invert',supress=False)
-            if os.path.isdir('/content/tempde') == False:
-                os.mkdir('/content/tempde')
-            take_lowest_val('modelparams/1band_sr44100_hl512.json',
-                            '/content/tempde/difftemp_v',
-                            [os.path.join(self.spth, '{}_{}_{}.wav'.format(basename, model_name, 'Vocals')),os.path.join(self.spth, '{}_{}_{}.wav'.format(basename, model_name, 'Instruments'))],
-                            algorithm='min_mag',
-                            supress=True)
-            take_lowest_val('modelparams/1band_sr44100_hl512.json',
-                            '/content/tempde/difftemp',
-                            ['/content/tempde/difftemp_v.wav',os.path.join(self.spth, '{}_{}_{}.wav'.format(basename, model_name, 'Instruments'))],
-                            algorithm='invert',
-                            supress=True)
-            os.rename('/content/tempde/difftemp.wav','/content/tempde/{}_{}_DeepExtraction_Instruments.wav'.format(basename, model_name))
-            if os.path.isfile(self.spth+'/{}_{}_DeepExtraction_Instruments.wav'.format(basename, model_name)):
-                os.remove(self.spth+'/{}_{}_DeepExtraction_Instruments.wav'.format(basename, model_name))
-            shutil.move('/content/tempde/{}_{}_DeepExtraction_Instruments.wav'.format(basename, model_name),self.spth)
-            # VOCALS REMNANTS
-            if os.path.isfile(self.spth+'/{}_{}_DeepExtraction_Vocals.wav'.format(basename, model_name)):
-                os.remove(self.spth+'/{}_{}_DeepExtraction_Vocals.wav'.format(basename, model_name))
-            excess,_ = librosa.load('/content/tempde/difftemp_v.wav',mono=False,sr=44100)
-            _vocal,_ = librosa.load(os.path.join(self.spth, '{}_{}_{}.wav'.format(basename, model_name, 'Vocals')),
-                                    mono=False,sr=44100)
-            sf.write(self.spth + '/{}_{}_DeepExtraction_Vocals.wav'.format(basename,model_name),excess.T+_vocal.T,44100)
-            print('Complete!')
-        else: # args
-            print('inverse stft of {}...'.format(stems['inst']), end=' ')
-            model_name = os.path.splitext(os.path.basename(self.ptm))[0]
-            sf.write(os.path.join(self.spth, '{}_{}_{}.wav'.format(basename, model_name, stems['inst'])), wave, mp.param['sr'])
-            print('done')
-            if True:
-                print('inverse stft of {}...'.format(stems['vocals']), end=' ')
-                #v_spec_m = X_spec_m - y_spec_m
-                wave = spec_utils.cmb_spectrogram_to_wave(v_spec_m, mp)
-                print('done')
-                sf.write(os.path.join(self.spth, '{}_{}_{}.wav'.format(basename, model_name, stems['vocals'])), wave, mp.param['sr'])
-            if self.oi:
-                with open('{}_{}.jpg'.format(basename, stems['inst']), mode='wb') as f:
-                    image = spec_utils.spectrogram_to_image(y_spec_m)
-                    _, bin_image = cv2.imencode('.jpg', image)
-                    bin_image.tofile(f)
-                with open('{}_{}.jpg'.format(basename, stems['vocals']), mode='wb') as f:
-                    image = spec_utils.spectrogram_to_image(v_spec_m)
-                    _, bin_image = cv2.imencode('.jpg', image)
-                    bin_image.tofile(f)
-        torch.cuda.empty_cache() # clear ram <<<
+        _, ext = os.path.splitext(mix_path)
+
+        np.save(mix_cache_path, X_spec_m)
+        np.save(inst_cache_path, y_spec_m)
+
+    return X_spec_m, y_spec_m
+
+
+def spectrogram_to_wave(spec, hop_length, mp, multithreading):
+    import threading
+
+    spec_left = np.asfortranarray(spec[0])
+    spec_right = np.asfortranarray(spec[1])
     
-    def YouTube(self):
-        link = self.input
-        inputsha = hashlib.sha1(bytes(link, encoding='utf8')).hexdigest() + '.wav'
-        self.input = inputsha
-        # 251/140/250/139
-        frmt = 'best'
-        if 'youtu' in link:
-            frmt = '251/140/250/139'
-            print('YouTube Link detected')
-        else:
-            print('Non-YouTube link detected. Attempting to download.')
-        opt = {'format': frmt, 'outtmpl': inputsha, 'updatetime': False, 'nocheckcertificate': True}
-        print('Downloading...', end=' ')
-        with hide_opt():
-            with youtube_dl.YoutubeDL(opt) as ydl:
-                desc = ydl.extract_info(link, download=not os.path.isfile(inputsha))
-        print('done')
-        print(desc['title'])
-        titlename = desc['title']
-        modname = os.path.splitext(os.path.basename(self.ptm))[0]
-        inname = os.path.splitext(os.path.basename(inputsha))[0]
-        inmodname = inname + '_' + modname
-        self.inference()
-        os.rename("separated/{}_Instruments.wav".format(inmodname), 'separated/' + sanitize_filename(titlename) + '_{}_Instruments.wav'.format(modname))
-        os.rename("separated/{}_Vocals.wav".format(inmodname), 'separated/' + sanitize_filename(titlename) + '_{}_Vocals.wav'.format(modname))
-        stems = {'inst': 'Instruments', 'vocals': 'Vocals'}
-        if self.de:
-            if self.v:
-                stems = {'inst': 'Vocals', 'vocals': 'Instruments'}
-            os.rename("separated/{}_DeepExtraction_{}.wav".format(inmodname,stems['inst']), 'separated/' + '{}_{}_DeepExtraction_{}.wav'.format(sanitize_filename(titlename),modname,stems['inst']))
-            os.rename("separated/{}_DeepExtraction_{}.wav".format(inmodname,stems['vocals']), 'separated/' + '{}_{}_DeepExtraction_{}.wav'.format(sanitize_filename(titlename),modname,stems['vocals']))
-            os.remove(inputsha)
-        if os.path.isfile(inputsha):
-            os.remove(inputsha)
-
-
-def whatArchitectureIsThisModel(modelname):
-    if 'arch-default' in modelname.lower():
-        return 'default'
-    elif 'arch-34m' in modelname.lower():
-        return '33966KB'
-        #from lib import nets_33966KB as nets 
-    elif 'arch-124m' in modelname.lower():
-        return '123821KB'
-        #from lib import nets_123821KB as nets
-    elif 'arch-130m' in modelname.lower():
-        return '129605KB'
-        #from lib import nets_129605KB as nets
-    elif 'arch-500m' in modelname.lower():
-        return '537238KB'
+    if multithreading:
+        def run_thread(**kwargs):
+            global wave_left
+            wave_left = librosa.istft(**kwargs)
+            
+        thread = threading.Thread(target=run_thread, kwargs={'stft_matrix': spec_left, 'hop_length': hop_length})
+        thread.start()
+        wave_right = librosa.istft(spec_right, hop_length=hop_length)
+        thread.join()   
     else:
-        print('Error! autoDetect_arch. Did you modify model filenames?')
-        return 'default'
+        wave_left = librosa.istft(spec_left, hop_length=hop_length)
+        wave_right = librosa.istft(spec_right, hop_length=hop_length)
+    
+    if mp.param['reverse']:
+        return np.asfortranarray([np.flip(wave_left), np.flip(wave_right)])
+    elif mp.param['mid_side_b']:
+        return np.asfortranarray([np.subtract(wave_left / 1.25, .4 * wave_right), np.add(wave_right / 1.25, .4 * wave_left)])       
+    elif mp.param['mid_side_b2']:
+        return np.asfortranarray([np.add(wave_right / 1.25, .4 * wave_left), np.subtract(wave_left / 1.25, .4 * wave_right)])    
+    elif mp.param['mid_side']:
+        return np.asfortranarray([np.add(wave_left, wave_right / 2), np.subtract(wave_left, wave_right / 2)])
+    elif mp.param['stereo_w']:
+        return np.asfortranarray([np.add(wave_left, wave_right * .25) / 0.9375, np.add(wave_right, wave_left * .25) / 0.9375])
+    else:
+        return np.asfortranarray([wave_left, wave_right])
+    
+    
+def cmb_spectrogram_to_wave(spec_m, mp, extra_bins_h=None, extra_bins=None):
+    wave_band = {}
+    bands_n = len(mp.param['band'])    
+    offset = 0
 
-def multi_file(models, inputs):
-    print('Multiple files detected.')
-    print('---------------------------------------------------------------')
-    for model in models:
-        for track in inputs:
-            print('Now processing: {} \nwith {}'.format(os.path.splitext(os.path.basename(track))[0],os.path.basename(model)))
-            model_params = whatParameterDoIUseForThisModel(model)
-            arch = whatArchitectureIsThisModel(model)
-            process = inference(track, model_params,model,gpu=args.gpu,hep=args.high_end_process,wsize=args.window_size,agr=args.aggressiveness,tta=args.tta,oi=args.output_image,de=args.deepextraction,pp=args.postprocess,arch=arch,v='vocal' in track.lower(), pp_thres=args.pp_threshold, mrange=args.pp_min_range, fsize=args.pp_fade_size)
-            if 'https://' in track:
-                process.YouTube()
+    for d in range(1, bands_n + 1):
+        bp = mp.param['band'][d]
+        spec_s = np.zeros(shape=(2, bp['n_fft'] // 2 + 1, spec_m.shape[2]), dtype=complex)
+        h = bp['crop_stop'] - bp['crop_start']
+        spec_s[:, bp['crop_start']:bp['crop_stop'], :] = spec_m[:, offset:offset+h, :]
+        
+        offset += h
+        if d == bands_n: # higher
+            if extra_bins_h: # if --high_end_process bypass
+                max_bin = bp['n_fft'] // 2
+                spec_s[:, max_bin-extra_bins_h:max_bin, :] = extra_bins[:, :extra_bins_h, :]
+            if bp['hpf_start'] > 0:
+                spec_s = fft_hp_filter(spec_s, bp['hpf_start'], bp['hpf_stop'] - 1)
+            if bands_n == 1:
+                wave = spectrogram_to_wave(spec_s, bp['hl'], mp, False)
             else:
-                process.inference()
-            print('---------------------------------------------------------------')
-
-def main():
-    global args
-    p = argparse.ArgumentParser()
-    p.add_argument('--isVocal','-v', action='store_true', help='Flip Instruments and Vocals output (Only for Vocal Models)') # FLIP
-    p.add_argument('--output_image', '-I', action='store_true', help='Export Spectogram in an image format')
-    p.add_argument('--postprocess', '-p', action='store_true', help='Masks instrumental part based on the vocals volume.')
-    p.add_argument('--tta', '-t', action='store_true', help='Perform Test-Time-Augmentation to improve the separation quality.')
-    p.add_argument('--suppress', '-s', action='store_true', help='Hide Warnings')
-
-    p.add_argument('--input', '-i', help='Input')
-    p.add_argument('--pretrained_model', '-P', type=str, default='', help='Pretrained model')
-    p.add_argument('--nn_architecture', '-n', type=str, choices=['default', '33966KB', '123821KB', '129605KB','537238KB'], default='default', help='Model architecture')
-    p.add_argument('--high_end_process', '-H', type=str, choices=['none', 'bypass', 'mirroring', 'mirroring2'], default='none', help='Working with extending a low band model.')
-    
-    p.add_argument('--pp_threshold', '-thres',type=float, default=0.2, help='threshold - This is an argument for post-processing')
-    p.add_argument('--pp_min_range', '-mrange',type=int, default=64, help='min_range - This is an argument for post-processing')
-    p.add_argument('--pp_fade_size', '-fsize',type=int, default=32, help='fade_size - This is an argument for post-processing')
-    
-    p.add_argument('--gpu', '-g', type=int, default=-1, help='Use GPU for faster processing')
-    p.add_argument('--model_params', '-m', type=str, default='', help="Model's parameter")
-    p.add_argument('--window_size', '-w', type=int, default=512, help='Window size')
-    p.add_argument('--aggressiveness', '-A', type=float, default=0.07, help='Aggressiveness of separation')
-
-    p.add_argument('--deepextraction', '-D', action='store_true', help='Deeply remove vocals from instruments')
-    
-    p.add_argument('--convert_all', '-c', action='store_true', help='Split all tracks in tracks/ folder') # ITERATE ALL TRACKS
-    p.add_argument('--useAllModel', '-a', type=str, choices=['none', 'v5', 'v5_new', 'all'], default='none', help='Use all models') # ITERATE TO MODEL
-
-    args = p.parse_args()
-    if args.suppress:
-        warnings.filterwarnings("ignore")
-    if args.convert_all or args.useAllModel != 'none':
-        # ∕
-        if args.convert_all:
-            args.input = glob.glob('tracks/*')
-        elif type(args.input) == str:
-            args.input = [args.input]
-        if args.useAllModel == 'v5':
-            useModel = glob.glob('models/v5/*.pth')
-        elif args.useAllModel == 'v5_new':
-            useModel = glob.glob('models/v5_new/*.pth')
-        elif args.useAllModel == 'all':
-            useModel = glob.glob('models/v5_new/*.pth')
-            useModel.extend(glob.glob('models/v5/*.pth'))
+                wave = np.add(wave, spectrogram_to_wave(spec_s, bp['hl'], mp, False))
         else:
-            useModel = glob.glob(args.pretrained_model)
-        multi_file(useModel, args.input)
+            sr = mp.param['band'][d+1]['sr']
+            if d == 1: # lower
+                spec_s = fft_lp_filter(spec_s, bp['lpf_start'], bp['lpf_stop'])
+                wave = librosa.resample(spectrogram_to_wave(spec_s, bp['hl'], mp, False), bp['sr'], sr, res_type="sinc_fastest")
+            else: # mid
+                spec_s = fft_hp_filter(spec_s, bp['hpf_start'], bp['hpf_stop'] - 1)
+                spec_s = fft_lp_filter(spec_s, bp['lpf_start'], bp['lpf_stop'])
+                wave2 = np.add(wave, spectrogram_to_wave(spec_s, bp['hl'], mp, False))
+                wave = librosa.resample(wave2, bp['sr'], sr, res_type="sinc_fastest")
+        
+    return wave.T
+def cmb_spectrogram_to_wave_ffmpeg(spec_m, mp, tmp_basename, extra_bins_h=None, extra_bins=None):
+    import subprocess
 
-    else:
-        arch = args.nn_architecture
-        process = inference(args.input,args.model_params,args.pretrained_model,gpu=args.gpu,hep=args.high_end_process,wsize=args.window_size,agr=args.aggressiveness,tta=args.tta,oi=args.output_image,de=args.deepextraction,pp=args.postprocess,arch=arch,v=args.isVocal, pp_thres=args.pp_threshold, mrange=args.pp_min_range, fsize=args.pp_fade_size)
-        if 'https://' in args.input:
-            warnings.filterwarnings("ignore")
-            process.YouTube()
-        else: # single
-            process.inference()
+    bands_n = len(mp.param['band'])    
+    offset = 0
+    ffmprc = {}
+
+    for d in range(1, bands_n + 1):
+        bp = mp.param['band'][d]
+        spec_s = np.ndarray(shape=(2, bp['n_fft'] // 2 + 1, spec_m.shape[2]), dtype=complex)
+        h = bp['crop_stop'] - bp['crop_start']
+        spec_s[:, bp['crop_start']:bp['crop_stop'], :] = spec_m[:, offset:offset+h, :]
+        tmp_wav = '{}_cmb_spectrogram_to_wave_b{}_sr{}'.format(tmp_basename, d, str(bp['sr']) + '.wav')
+        tmp_wav2 = '{}_cmb_spectrogram_to_wave_b{}_sr{}'.format(tmp_basename, d, str(mp.param['sr']) + '.wav')
+        
+        offset += h
+        if d == bands_n: # high-end
+            if extra_bins_h: # if --high_end_process bypass
+                max_bin = bp['n_fft'] // 2
+                spec_s[:, max_bin-extra_bins_h:max_bin, :] = extra_bins[:, :extra_bins_h, :]
+            if bp['hpf_start'] > 0:
+                spec_s = fft_hp_filter(spec_s, bp['hpf_start'], bp['hpf_stop'] - 1)
+            if bands_n == 1:
+                wave = spectrogram_to_wave(spec_s, bp['hl'], mp, False)
+            else:
+                wave = spectrogram_to_wave(spec_s, bp['hl'], mp, False)
+        else:
+            if d == 1: # lower
+                spec_s = fft_lp_filter(spec_s, bp['lpf_start'], bp['lpf_stop'])
+            else: # mid
+                spec_s = fft_hp_filter(spec_s, bp['hpf_start'], bp['hpf_stop'] - 1)
+                spec_s = fft_lp_filter(spec_s, bp['lpf_start'], bp['lpf_stop'])
+
+            sf.write(tmp_wav, spectrogram_to_wave(spec_s, bp['hl'], mp, False).T, bp['sr'])
+            ffmprc[d] = subprocess.Popen(['ffmpeg', '-hide_banner', '-loglevel', 'panic', '-y', '-i', tmp_wav, '-ar', str(mp.param['sr']), '-ac', '2', '-c:a', 'pcm_s16le', tmp_wav2])
+
+    for s in ffmprc:
+        ffmprc[s].communicate()
+        
+    for d in range(bands_n - 1, 0, -1):
+        os.remove(f'{tmp_basename}_cmb_spectrogram_to_wave_b{d}_sr' + str(mp.param['band'][d]['sr']) + '.wav')
+        tmp_wav2 = f'{tmp_basename}_cmb_spectrogram_to_wave_b{d}_sr' + str(mp.param['sr']) + '.wav'
+        wave2, _ = librosa.load(tmp_wav2, mp.param['sr'], False, dtype=np.float32, res_type="sinc_fastest")
+        os.remove(tmp_wav2)
+        wave = np.add(wave, wave2)
+
+    return wave.T
+
+def fft_lp_filter(spec, bin_start, bin_stop):
+    g = 1.0
+    for b in range(bin_start, bin_stop):
+        g -= 1 / (bin_stop - bin_start)
+        spec[:, b, :] = g * spec[:, b, :]
+        
+    spec[:, bin_stop:, :] *= 0
+
+    return spec
 
 
-if __name__ == "__main__":
-    start_time = time.time()
-    main()
-    print('Total time: {0:.{1}f}s'.format(time.time() - start_time, 1))
+def fft_hp_filter(spec, bin_start, bin_stop):
+    g = 1.0
+    for b in range(bin_start, bin_stop, -1):
+        g -= 1 / (bin_start - bin_stop)
+        spec[:, b, :] = g * spec[:, b, :]
+    
+    spec[:, 0:bin_stop+1, :] *= 0
+
+    return spec
+
+def mirroring(a, spec_m, input_high_end, mp):
+    if 'mirroring' == a:
+        mirror = np.flip(np.abs(spec_m[:, mp.param['pre_filter_start']-10-input_high_end.shape[1]:mp.param['pre_filter_start']-10, :]), 1)
+        mirror = mirror * np.exp(1.j * np.angle(input_high_end))
+        
+        return np.where(np.abs(input_high_end) <= np.abs(mirror), input_high_end, mirror)
+        
+    if 'mirroring2' == a:
+        mirror = np.flip(np.abs(spec_m[:, mp.param['pre_filter_start']-10-input_high_end.shape[1]:mp.param['pre_filter_start']-10, :]), 1)
+        mi = np.multiply(mirror, input_high_end)
+        
+        return np.where(np.abs(input_high_end) <= np.abs(mi), input_high_end, mi)
