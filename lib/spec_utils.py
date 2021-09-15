@@ -33,7 +33,6 @@ def spec_effects(mp, inp, o, algorithm='invert'):
     #X_wave, y_wave, X_spec_s, y_spec_s = {}, {}, {}, {}
     X_spec_m,_,_ = loadWave(inp[0], mp)
     y_spec_m,_,_ = loadWave(inp[1], mp)
-    X_spec_m,y_spec_m=align_wave_head_and_tail(X_spec_m,y_spec_m)
     if algorithm == 'invert':
         y_spec_m = reduce_vocal_aggressively(X_spec_m, y_spec_m, 0.2)
         v_spec_m = X_spec_m - y_spec_m
