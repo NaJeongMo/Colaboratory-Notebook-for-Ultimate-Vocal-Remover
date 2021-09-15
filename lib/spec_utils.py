@@ -116,7 +116,7 @@ def wave_to_spectrogram(wave, hop_length, n_fft, mp, multithreading):
     
 def combine_spectrograms(specs, mp):
     l = min([specs[i].shape[2] for i in specs])    
-    spec_c = np.ndarray(shape=(2, mp.param['bins'] + 1, l), dtype=np.complex64)
+    spec_c = np.zeros(shape=(2, mp.param['bins'] + 1, l), dtype=np.complex64)
     offset = 0
     bands_n = len(mp.param['band'])
     
@@ -316,7 +316,7 @@ def cmb_spectrogram_to_wave(spec_m, mp, extra_bins_h=None, extra_bins=None):
 
     for d in range(1, bands_n + 1):
         bp = mp.param['band'][d]
-        spec_s = np.ndarray(shape=(2, bp['n_fft'] // 2 + 1, spec_m.shape[2]), dtype=complex)
+        spec_s = np.zeros(shape=(2, bp['n_fft'] // 2 + 1, spec_m.shape[2]), dtype=complex)
         h = bp['crop_stop'] - bp['crop_start']
         spec_s[:, bp['crop_start']:bp['crop_stop'], :] = spec_m[:, offset:offset+h, :]
         
