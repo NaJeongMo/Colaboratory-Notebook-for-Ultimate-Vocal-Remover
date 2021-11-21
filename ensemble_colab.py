@@ -29,10 +29,9 @@ def ensembleIteration(count):
     return result
 
 
-def ensemble(input,model=[],algorithms=['min_mag','max_mag']):
-    if len(model) <= 1:
-        print('You need at least 2 models!')
-        sys.exit()
+def ensemble(input,ens_param='',model=[],algorithms=['min_mag','max_mag']):
+    assert not len(model) <= 1, 'You need at least 2 models!'
+    assert os.path.exists(ens_param), 'Parameter does not exist!'
     if args.temp[len(args.temp)-1] == '/' or args.temp[len(args.temp)-1] == '\\':
         savedtemp = args.temp[:len(args.temp)-1]
     else:
@@ -73,7 +72,6 @@ def ensemble(input,model=[],algorithms=['min_mag','max_mag']):
                             agr=args.aggressiveness,
                             tta=args.tta, # rip if this is true lol
                             oi=False,
-                            de=args.deepextraction,
                             pp=args.postprocess,
                             fn=r,
                             spth=f'{savedtemp}/temp',
@@ -94,11 +92,10 @@ def ensemble(input,model=[],algorithms=['min_mag','max_mag']):
 
     bsnme = os.path.splitext(os.path.basename(input))[0]
 
-    params = ModelParameters('modelparams/1band_sr44100_hl512.json')
+    params = ModelParameters(ens_param)
     for a in range(0,r):
         if a + 1 > r-1:
             break
-        
         spec_utils.spec_effects(params,
                                 [f'{savedtemp}/temp/{a}_{modelname[a]}_Instruments.wav',f'{savedtemp}/temp/{a+1}_{modelname[a+1]}_Instruments.wav'],
                                 f'{savedtemp}/stage_1/{a}',
@@ -123,17 +120,18 @@ def ensemble(input,model=[],algorithms=['min_mag','max_mag']):
         final_ens = f'{savedtemp}/stage_{r-1}/{random.randint(0,22)}_{bsnme}_Ensembled_Instruments.wav'
     shutil.move(final_ens,'separated/')
     progress_bar.close()
-
+    #---------------------------------
     print('Ensembling Vocals...')
     iter = ensembleIteration(r)
     progress_bar = tqdm(total=iter)
     for a in range(0,r):
         if a + 1 > r-1:
             break
-        #spec_effects(mp, inp, o, algorithm='invert')
         spec_utils.spec_effects(params,
-                                [f'{savedtemp}/temp/{a}_{modelname[a]}_Vocals.wav',f'{savedtemp}/temp/{a+1}_{modelname[a+1]}_Vocals.wav'],
-                                f'{savedtemp}/stage_1/{a}',
+                                [f'{savedtemp}/temp/{a}_{modelname[a]}_Vocals.wav',
+                                f'{savedtemp}/temp/{a+1}_{modelname[a+1]}_Vocals.wav'],
+                                
+                                f'{savedtemp}/stage_1/{a}', # Output
                                 algorithm=voc_algo)
         progress_bar.update(1)
     # set 0
@@ -162,6 +160,7 @@ p.add_argument('--model_ens', nargs='+', required=False, default=[], help='Ensem
 p.add_argument('--temp','-T', help='temp file location',default='/content/temp')
 p.add_argument('--suppress', '-s', action='store_true', help='Hide Warnings')
 p.add_argument('--algo','-a', nargs='+', default=['min_mag','max_mag'], help='Algorithm to be used for instrumental and acapella. (In order)')
+p.add_argument('--ens_param', default='', type=str)
 
 p.add_argument('--high_end_process', '-H', type=str, choices=['none', 'bypass', 'mirroring', 'mirroring2'], default='none')
 p.add_argument('--window_size', '-w', type=int, default=512, help='Window size')
@@ -177,4 +176,4 @@ args = p.parse_args()
 if args.suppress:
     warnings.filterwarnings("ignore")
 # ---------------------------------
-ensemble(args.input,args.model_ens,algorithms=args.algo)
+ensemble(args.input,ens_param=args.ens_param,model=args.model_ens,algorithms=args.algo)
