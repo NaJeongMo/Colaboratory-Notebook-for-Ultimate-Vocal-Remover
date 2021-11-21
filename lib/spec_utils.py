@@ -30,9 +30,10 @@ def loadWave(inp, mp, hep='none'):
     return X_spec_m, input_high_end_h, input_high_end
 
 def spec_effects(mp, inp, o, algorithm='invert'):
-    #X_wave, y_wave, X_spec_s, y_spec_s = {}, {}, {}, {}
     X_spec_m,_,_ = loadWave(inp[0], mp)
     y_spec_m,_,_ = loadWave(inp[1], mp)
+    c = min(X_spec_m.shape[2],y_spec_m.shape[2])
+    X_spec_m,y_spec_m = X_spec_m[...,:c], y_spec_m[...,:c]
     if algorithm == 'invert':
         y_spec_m = reduce_vocal_aggressively(X_spec_m, y_spec_m, 0.2)
         v_spec_m = X_spec_m - y_spec_m
@@ -212,9 +213,8 @@ def mask_silence(mag, ref, thres=0.2, min_range=64, fade_size=32):
             old_e = e
 
     return mag
-    
 
-def align_wave_head_and_tail(a, b, sr=0):
+def align_wave_head_and_tail(a, b):
     l = min([a[0].size, b[0].size])
     
     return a[:l,:l], b[:l,:l]
