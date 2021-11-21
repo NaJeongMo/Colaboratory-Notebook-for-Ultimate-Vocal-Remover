@@ -15,7 +15,6 @@ import shutil
 
 import torch
 
-import wave
 import time
 import math
 import glob
@@ -40,9 +39,9 @@ class hide_opt:
 
 
 class inference:
-    def __init__(self, input, param, ptm, gpu=-1, hep='none', wsize=320, agr=0.07, tta=False, oi=False, de=False, v=False, spth='separated', fn='', pp=False, arch='default',
-                pp_thres = 0.2, mrange = 32, fsize = 64, _stem='Both'):
-        self.input = input
+    def __init__(self, _input, param, ptm, gpu=-1, hep='none', wsize=320, agr=0.07, tta=False, oi=False, de=False, v=False, spth='separated', fn='', pp=False, arch='default',
+                pp_thres = 0.2, mrange = 32, fsize = 64, input_shape=0):
+        self.input = _input
         self.param = param
         self.ptm = ptm
         self.gpu = gpu
@@ -60,19 +59,31 @@ class inference:
         self.pp_thres = pp_thres
         self.mrange = mrange
         self.fsize = fsize
-        self._stem = _stem
+        self.input_shape = input_shape
     def inference(self):
-        #assert self._stem != 'Both' and self.de == True
         nets = importlib.import_module('lib.nets' + f'_{self.arch}'.replace('_default', ''), package=None)
         # load model -------------------------------
-        print('loading model...', end=' ')
-        mp = ModelParameters(self.param)
-        device = torch.device('cpu')
-        model = nets.CascadedASPPNet(mp.param['bins'] * 2)
-        model.load_state_dict(torch.load(self.ptm, map_location=device))
-        if torch.cuda.is_available() and self.gpu >= 0:
-            device = torch.device('cuda:{}'.format(self.gpu))
-            model.to(device)
+        def loadModel():
+            global mp, device, model
+            try:
+                print('loading model...', end=' ')
+                mp = ModelParameters(self.param)
+                device = torch.device('cpu')
+                model = nets.CascadedASPPNet(mp.param['bins'] * 2)
+                model.load_state_dict(torch.load(self.ptm, map_location=device))
+                if torch.cuda.is_available() and self.gpu >= 0:
+                    device = torch.device('cuda:{}'.format(self.gpu))
+                    model.to(device)
+            except:
+                return False
+            return True
+        while True:
+            a = loadModel()
+            if not a:
+                print('Model loading failed, trying again...')
+            else:
+                del a
+                break
         print('done')
         # stft of wave source -------------------------------
         print('stft of wave source...', end=' ')
@@ -102,26 +113,25 @@ class inference:
         stems['dv'] = 'DeepExtraction_Vocals'
         y_spec_m = pred * X_phase # instruments
         v_spec_m = X_spec_m - y_spec_m # vocals
+
+        #Instrumental wave upscale
         if self.hep == 'bypass':
-            wave = spec_utils.cmb_spectrogram_to_wave(y_spec_m, mp, input_high_end_h, input_high_end)
+            y_wave = spec_utils.cmb_spectrogram_to_wave(y_spec_m, mp, input_high_end_h, input_high_end)
         elif self.hep.startswith('mirroring'):       
             input_high_end_ = spec_utils.mirroring(self.hep, y_spec_m, input_high_end, mp)
-            
-            wave = spec_utils.cmb_spectrogram_to_wave(y_spec_m, mp, input_high_end_h, input_high_end_)  
+            y_wave = spec_utils.cmb_spectrogram_to_wave(y_spec_m, mp, input_high_end_h, input_high_end_)  
         else:
-            wave = spec_utils.cmb_spectrogram_to_wave(y_spec_m, mp)
+            y_wave = spec_utils.cmb_spectrogram_to_wave(y_spec_m, mp)
+        
+        v_wave = spec_utils.cmb_spectrogram_to_wave(v_spec_m, mp)
         #saving files------------------------
-        if self._stem != 'Both' and self.v:
-            print('Warning: outputs are flipped!')
         if self.de: # deep extraction
-            #print('done')
             model_name = os.path.splitext(os.path.basename(self.ptm))[0]
             print('inverse stft of {}...'.format(stems['inst']), end=' ')
-            sf.write(os.path.join(self.spth, '{}_{}_{}.wav'.format(basename, model_name, stems['inst'])), wave, mp.param['sr'])
+            sf.write(os.path.join(self.spth, '{}_{}_{}.wav'.format(basename, model_name, stems['inst'])), y_wave, mp.param['sr'])
             print('done')
-            wave = spec_utils.cmb_spectrogram_to_wave(v_spec_m, mp)
             print('inverse stft of {}...'.format(stems['vocals']), end=' ')
-            sf.write(os.path.join(self.spth, '{}_{}_{}.wav'.format(basename, model_name, stems['vocals'])), wave, mp.param['sr'])
+            sf.write(os.path.join(self.spth, '{}_{}_{}.wav'.format(basename, model_name, stems['vocals'])), v_wave, mp.param['sr'])
             print('done')
             if self.oi:
                 with open('{}_{}.jpg'.format(basename, stems['inst']), mode='wb') as f:
@@ -138,11 +148,13 @@ class inference:
                 os.mkdir('/content/tempde')
 
             spec_utils.spec_effects(ModelParameters('modelparams/1band_sr44100_hl512.json'),
-                                    [os.path.join(self.spth, '{}_{}_{}.wav'.format(basename, model_name, 'Vocals')),os.path.join(self.spth, '{}_{}_{}.wav'.format(basename, model_name, 'Instruments'))],
+                                    [os.path.join(self.spth, '{}_{}_{}.wav'.format(basename, model_name, 'Vocals')),
+                                     os.path.join(self.spth, '{}_{}_{}.wav'.format(basename, model_name, 'Instruments'))],
                                     '/content/tempde/difftemp_v',
                                     algorithm='min_mag')
             spec_utils.spec_effects(ModelParameters('modelparams/1band_sr44100_hl512.json'),
-                                    ['/content/tempde/difftemp_v.wav',os.path.join(self.spth, '{}_{}_{}.wav'.format(basename, model_name, 'Instruments'))],
+                                    ['/content/tempde/difftemp_v.wav',
+                                     os.path.join(self.spth, '{}_{}_{}.wav'.format(basename, model_name, 'Instruments'))],
                                     '/content/tempde/difftemp',
                                     algorithm='invert')
             os.rename('/content/tempde/difftemp.wav','/content/tempde/{}_{}_{}.wav'.format(basename, model_name, stems['di']))
@@ -157,28 +169,23 @@ class inference:
             excess,_ = librosa.load('/content/tempde/difftemp_v.wav',mono=False,sr=44100)
             _vocal,_ = librosa.load(os.path.join(self.spth, '{}_{}_{}.wav'.format(basename, model_name, 'Vocals')),
                                     mono=False,sr=44100)
+            # this isn't required, but just in case.
             excess, _vocal = spec_utils.align_wave_head_and_tail(excess,_vocal)
             sf.write(self.spth + '/{}_{}_{}.wav'.format(basename,model_name, stems['dv']),excess.T+_vocal.T,44100)
             print('Complete!')
         else: # args
-            if self._stem != 'Both' and self._stem == 'Instrumental only' or self._stem == 'Both':
-                print('inverse stft of {}...'.format(stems['inst']), end=' ')
-                model_name = os.path.splitext(os.path.basename(self.ptm))[0]
-                sf.write(os.path.join(self.spth, '{}_{}_{}.wav'.format(basename, model_name, stems['inst'])), wave, mp.param['sr'])
-                print('done')
-            if self._stem != 'Both' and self._stem == 'Vocals only' or self._stem == 'Both':
-                print('inverse stft of {}...'.format(stems['vocals']), end=' ')
-                #v_spec_m = X_spec_m - y_spec_m
-                wave = spec_utils.cmb_spectrogram_to_wave(v_spec_m, mp)
-                print('done')
-                sf.write(os.path.join(self.spth, '{}_{}_{}.wav'.format(basename, model_name, stems['vocals'])), wave, mp.param['sr'])
+            print('inverse stft of {}...'.format(stems['inst']), end=' ')
+            model_name = os.path.splitext(os.path.basename(self.ptm))[0]
+            sf.write(os.path.join(self.spth, '{}_{}_{}.wav'.format(basename, model_name, stems['inst'])), y_wave, mp.param['sr'])
+            print('done')
+            print('inverse stft of {}...'.format(stems['vocals']), end=' ')
+            print('done')
+            sf.write(os.path.join(self.spth, '{}_{}_{}.wav'.format(basename, model_name, stems['vocals'])), v_wave, mp.param['sr'])
             if self.oi:
-                if self._stem != 'Both' and self._stem == 'Instrumental only' or self._stem == 'Both':
                     with open('{}_{}.jpg'.format(basename, stems['inst']), mode='wb') as f:
                         image = spec_utils.spectrogram_to_image(y_spec_m)
                         _, bin_image = cv2.imencode('.jpg', image)
                         bin_image.tofile(f)
-                if self._stem != 'Both' and self._stem == 'Vocals only' or self._stem == 'Both':
                     with open('{}_{}.jpg'.format(basename, stems['vocals']), mode='wb') as f:
                         image = spec_utils.spectrogram_to_image(v_spec_m)
                         _, bin_image = cv2.imencode('.jpg', image)
@@ -289,7 +296,7 @@ def main():
     else:
         arch = args.nn_architecture
         process = inference(args.input,args.model_params,args.pretrained_model,gpu=args.gpu,hep=args.high_end_process,wsize=args.window_size,agr=args.aggressiveness,tta=args.tta,oi=args.output_image,de=args.deepextraction,pp=args.postprocess,arch=arch,v=args.isVocal, pp_thres=args.pp_threshold, mrange=args.pp_min_range, fsize=args.pp_fade_size)
-        if 'https://' in args.input:
+        if '://' in args.input:
             warnings.filterwarnings("ignore")
             process.YouTube()
         else: # single
