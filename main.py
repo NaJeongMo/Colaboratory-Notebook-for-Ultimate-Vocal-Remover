@@ -77,7 +77,11 @@ class inference:
             except:
                 return False
             return True
+        load_counter = 0
         while True:
+            load_counter += 1
+            if load_counter == 5:
+                quit('Error loading model. Perhaps you\'re using a wrong model architecture or you might have to restart runtime.')
             a = loadModel()
             if not a:
                 print('Model loading failed, trying again...')
