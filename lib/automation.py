@@ -1,7 +1,10 @@
 def whatParameterDoIUseForThisModel(modelname):
     modelname = modelname.lower()
     if '4band' in modelname:
-        parameter = 'modelparams/4band_44100.json'
+        if 'v2' in modelname:
+            parameter = 'modelparams/4band_v2.json'
+        else:
+            parameter = 'modelparams/4band_44100.json'
     elif '3band' in modelname:
         if 'msb2' in modelname:
             parameter = 'modelparams/3band_44100_msb2.json'
