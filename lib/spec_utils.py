@@ -43,17 +43,20 @@ def spec_effects(mp, inp, o, algorithm='invert'):
         v_spec_m = np.where(np.abs(X_spec_m) >= np.abs(y_spec_m), X_spec_m, y_spec_m)
     if algorithm == 'comb_norm': # debug
         v_spec_m = X_spec_m + y_spec_m
+    if algorithm == 'mul':
+        s1 = y_spec_m * X_spec_m
+        s2 = .5*(y_spec_m+X_spec_m)
+        v_spec_m = np.divide(s1, s2, out=np.zeros_like(s1), where=s2!=0)
+    if algorithm == 'crossover':
+        freq_to_bin = 2*c/44100
+        bs = int(500*freq_to_bin)
+        be = int(14000 * freq_to_bin)
+        v_spec_m = y_spec_m * get_lp_filter_mask(c, bs, be)+X_spec_m*get_hp_filter_mask(c, be, bs)
     wave = cmb_spectrogram_to_wave(v_spec_m, mp)
     if algorithm == 'comb_norm':
         wave = normalise(wave)
     sf.write('{}.wav'.format(o), wave, mp.param['sr'])
 
-#def normalise(wave):
-#    if max(abs(wave[0])) >= max(abs(wave[1])):
-#        wave *= 1/max(abs(wave[0]))
-#    elif max(abs(wave[0])) <= max(abs(wave[1])):
-#        wave *= 1/max(abs(wave[1]))
-#    return wave
 
 def normalise(wave):
     return wave / max(np.max(wave), abs(np.min(wave)))
@@ -410,6 +413,26 @@ def fft_hp_filter(spec, bin_start, bin_stop):
     spec[:, 0:bin_stop+1, :] *= 0
 
     return spec
+
+# for ensemble
+def get_lp_filter_mask(bins_n, bin_start, bin_stop):
+    mask = np.concatenate([
+        np.ones((bin_start - 1, 1)),
+        np.linspace(1, 0, bin_stop - bin_start + 1)[:, None],
+        np.zeros((bins_n - bin_stop, 1))
+    ], axis=0)
+
+    return mask
+    
+    
+def get_hp_filter_mask(bins_n, bin_start, bin_stop):
+    mask = np.concatenate([
+        np.zeros((bin_stop + 1, 1)),
+        np.linspace(0, 1, 1 + bin_start - bin_stop)[:, None],
+        np.ones((bins_n - bin_start - 2, 1))
+    ], axis=0)
+
+    return mask
 
 def mirroring(a, spec_m, input_high_end, mp):
     if 'mirroring' == a:
