@@ -1,7 +1,5 @@
-from numpy.core.fromnumeric import take
 from pathvalidate import sanitize_filename
 import soundfile as sf
-from tqdm import tqdm
 import numpy as np
 import youtube_dl
 import importlib
@@ -10,13 +8,12 @@ import warnings
 import os.path
 import librosa
 import hashlib
-import random
+import types
 import shutil
 
 import torch
 
 import time
-import math
 import glob
 import cv2
 import sys
@@ -40,7 +37,7 @@ class hide_opt:
 
 class inference:
     def __init__(self, _input, param, ptm, gpu=-1, hep='none', wsize=320, agr=0.07, tta=False, oi=False, de=False, v=False, spth='separated', fn='', pp=False, arch='default',
-                pp_thres = 0.2, mrange = 32, fsize = 64, input_shape=0):
+                pp_thres = 0.2, mrange = 32, fsize = 64):
         self.input = _input
         self.param = param
         self.ptm = ptm
@@ -59,7 +56,6 @@ class inference:
         self.pp_thres = pp_thres
         self.mrange = mrange
         self.fsize = fsize
-        self.input_shape = input_shape
     def inference(self):
         nets = importlib.import_module('lib.nets' + f'_{self.arch}'.replace('_default', ''), package=None)
         # load model -------------------------------
@@ -74,16 +70,16 @@ class inference:
                 if torch.cuda.is_available() and self.gpu >= 0:
                     device = torch.device('cuda:{}'.format(self.gpu))
                     model.to(device)
-            except:
-                return False
+            except Exception as e:
+                return str(e)
             return True
         load_counter = 0
         while True:
             load_counter += 1
             if load_counter == 5:
-                quit('Error loading model. Perhaps you\'re using a wrong model architecture or you might have to restart runtime.')
+                quit('An error has occurred: {}'.format(a))
             a = loadModel()
-            if not a:
+            if not type(a) == bool:
                 print('Model loading failed, trying again...')
             else:
                 del a
@@ -275,7 +271,6 @@ def main():
     
     p.add_argument('--convert_all', '-c', action='store_true', help='Split all tracks in tracks/ folder') # ITERATE ALL TRACKS
     p.add_argument('--useAllModel', '-a', type=str, choices=['none', 'v5', 'v5_new', 'all'], default='none', help='Use all models') # ITERATE TO MODEL
-    p.add_argument('--stem', type=str, default='Both', help='Stem to export') # non operational for now, will give you errors if you touch this
 
     args = p.parse_args()
     if args.suppress:
@@ -308,6 +303,6 @@ def main():
 
 
 if __name__ == "__main__":
-    start_time = time.time()
+    start_time = time.perf_counter()
     main()
-    print('Total time: {0:.{1}f}s'.format(time.time() - start_time, 1))
+    print('Total time: {0:.{1}f}s'.format(time.perf_counter() - start_time, 1))
