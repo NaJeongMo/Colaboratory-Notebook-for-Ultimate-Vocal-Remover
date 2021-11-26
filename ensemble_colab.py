@@ -7,6 +7,7 @@ import os.path
 import librosa
 import random
 import shutil
+import time
 
 import glob
 import sys
@@ -18,6 +19,7 @@ from main import inference
 from lib import automation
 from lib import spec_utils
 
+start_time = time.perf_counter()
 
 def ensembleIteration(count):
     count -= 1
@@ -29,7 +31,11 @@ def ensembleIteration(count):
     return result
 
 
-def ensemble(input,ens_param='',model=[],algorithms=['min_mag','max_mag']):
+def ensemble(input,ens_param='',model=None,algorithms=None):
+    if model == None:
+        model = []
+    if algorithms == None:
+        algorithms = ['min_mag','max_mag']
     assert not len(model) <= 1, 'You need at least 2 models!'
     assert os.path.exists(ens_param), 'Parameter does not exist!'
     if args.temp[len(args.temp)-1] == '/' or args.temp[len(args.temp)-1] == '\\':
@@ -177,3 +183,4 @@ if args.suppress:
     warnings.filterwarnings("ignore")
 # ---------------------------------
 ensemble(args.input,ens_param=args.ens_param,model=args.model_ens,algorithms=args.algo)
+print('Total time: {0:.{1}f}s'.format(time.perf_counter() - start_time, 1))
