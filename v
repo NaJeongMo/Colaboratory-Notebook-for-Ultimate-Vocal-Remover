@@ -2,7 +2,7 @@
 
 REPORT ERRORS TO Hv#3868
 
-updates:
+updates(re):
         -Added new model: HP-4BAND-V2_arch-124m.pth
         -Added new parameter: 4band_v2.json
         -Added new ensembling algorithms: mul, crossover
