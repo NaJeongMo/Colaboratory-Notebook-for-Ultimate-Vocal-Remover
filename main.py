@@ -1,7 +1,7 @@
 from pathvalidate import sanitize_filename
 import soundfile as sf
 import numpy as np
-import youtube_dl
+import yt_dlp as youtube_dl
 import importlib
 import argparse
 import warnings
