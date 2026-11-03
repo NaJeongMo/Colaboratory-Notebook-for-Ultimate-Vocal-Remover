@@ -66,7 +66,7 @@ class inference:
                 mp = ModelParameters(self.param)
                 device = torch.device('cpu')
                 model = nets.CascadedASPPNet(mp.param['bins'] * 2)
-                model.load_state_dict(torch.load(self.ptm, map_location=device))
+                model.load_state_dict(torch.load(self.ptm, map_location=device, weights_only=True))
                 if torch.cuda.is_available() and self.gpu >= 0:
                     device = torch.device('cuda:{}'.format(self.gpu))
                     model.to(device)
